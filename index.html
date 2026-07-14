@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ingreso de datos | Diego</title>
+
+  <style>
+    :root {
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #172033;
+      background: #f4f7fb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        radial-gradient(circle at top left, rgba(62, 207, 142, 0.22), transparent 35%),
+        linear-gradient(135deg, #f7fafc, #edf4f8);
+    }
+
+    .card {
+      width: min(100%, 520px);
+      padding: 32px;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid rgba(23, 32, 51, 0.08);
+      border-radius: 22px;
+      box-shadow: 0 24px 70px rgba(23, 32, 51, 0.13);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 11px;
+      margin-bottom: 14px;
+      border-radius: 999px;
+      background: #e7f9f1;
+      color: #08744c;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 6vw, 38px);
+      line-height: 1.1;
+    }
+
+    .description {
+      margin: 0 0 26px;
+      color: #667085;
+      line-height: 1.55;
+    }
+
+    .field {
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    input {
+      width: 100%;
+      padding: 14px 15px;
+      border: 1px solid #cfd8e6;
+      border-radius: 12px;
+      background: #ffffff;
+      color: #172033;
+      font: inherit;
+      outline: none;
+      transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+
+    input:focus {
+      border-color: #3ecf8e;
+      box-shadow: 0 0 0 4px rgba(62, 207, 142, 0.17);
+    }
+
+    button {
+      width: 100%;
+      margin-top: 4px;
+      padding: 14px 18px;
+      border: 0;
+      border-radius: 12px;
+      background: #1f9d68;
+      color: white;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 150ms ease, opacity 150ms ease, background 150ms ease;
+    }
+
+    button:hover {
+      background: #188457;
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      cursor: wait;
+      opacity: 0.65;
+      transform: none;
+    }
+
+    #mensaje {
+      display: none;
+      margin-top: 18px;
+      padding: 13px 14px;
+      border-radius: 11px;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    #mensaje.exito {
+      display: block;
+      background: #e7f9f1;
+      color: #08633f;
+      border: 1px solid #b7eed5;
+    }
+
+    #mensaje.error {
+      display: block;
+      background: #fff0f0;
+      color: #a51d2d;
+      border: 1px solid #ffc7cd;
+    }
+
+    .nota {
+      margin-top: 18px;
+      color: #7b8494;
+      font-size: 12px;
+      line-height: 1.5;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="card">
+    <div class="badge">● Conectado con Supabase</div>
+
+    <h1>Ingreso de información</h1>
+    <p class="description">
+      Completa ambos campos y presiona el botón para guardar los datos en la tabla
+      <strong>diego</strong>.
+    </p>
+
+    <form id="formulario">
+      <div class="field">
+        <label for="campo1">Campo 1</label>
+        <input
+          id="campo1"
+          name="campo1"
+          type="text"
+          placeholder="Escribe el contenido del campo 1"
+          required
+        />
+      </div>
+
+      <div class="field">
+        <label for="campo2">Campo 2</label>
+        <input
+          id="campo2"
+          name="campo2"
+          type="text"
+          placeholder="Escribe el contenido del campo 2"
+          required
+        />
+      </div>
+
+      <button id="botonGuardar" type="submit">Guardar en la base de datos</button>
+      <div id="mensaje" role="status" aria-live="polite"></div>
+    </form>
+
+    <div class="nota">
+      La página utiliza únicamente la clave pública/publishable de Supabase.
+      Nunca coloques aquí la clave <strong>service_role</strong>.
+    </div>
+  </main>
+
+  <!-- Librería oficial supabase-js, versión 2 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <script>
+    /*
+      1. Reemplaza estos dos valores con los de tu proyecto:
+         Supabase > Project Settings > API
+
+      2. Usa la Project URL y la Publishable key o anon public key.
+         NUNCA uses la clave service_role en una página web.
+    */
+    const SUPABASE_URL = "https://ikutxjpdqqbbezpvhrlo.supabase.co/rest/v1/";
+    const SUPABASE_PUBLIC_KEY = "sb_secret_PiY4Ws2MG_U3926pR6B_Mw_DeJ-PqY-";
+
+    const clienteSupabase = window.supabase.createClient(
+      SUPABASE_URL,
+      SUPABASE_PUBLIC_KEY
+    );
+
+    const formulario = document.getElementById("formulario");
+    const campo1 = document.getElementById("campo1");
+    const campo2 = document.getElementById("campo2");
+    const botonGuardar = document.getElementById("botonGuardar");
+    const mensaje = document.getElementById("mensaje");
+
+    function mostrarMensaje(texto, tipo) {
+      mensaje.textContent = texto;
+      mensaje.className = tipo;
+    }
+
+    formulario.addEventListener("submit", async (evento) => {
+      evento.preventDefault();
+
+      const valor1 = campo1.value.trim();
+      const valor2 = campo2.value.trim();
+
+      if (!valor1 || !valor2) {
+        mostrarMensaje("Debes completar los dos campos.", "error");
+        return;
+      }
+
+      botonGuardar.disabled = true;
+      botonGuardar.textContent = "Guardando...";
+      mensaje.className = "";
+      mensaje.textContent = "";
+
+      try {
+        const { error } = await clienteSupabase
+          .from("diego")
+          .insert({
+            "1": valor1,
+            "2": valor2
+          });
+
+        if (error) {
+          throw error;
+        }
+
+        mostrarMensaje("Información guardada correctamente.", "exito");
+        formulario.reset();
+        campo1.focus();
+
+      } catch (error) {
+        console.error(error);
+
+        let detalle = error?.message || "Error desconocido.";
+
+        if (
+          SUPABASE_URL.includes("TU-PROYECTO") ||
+          SUPABASE_PUBLIC_KEY.includes("TU_CLAVE")
+        ) {
+          detalle = "Primero debes configurar la URL y la clave pública de Supabase dentro del archivo index.html.";
+        }
+
+        mostrarMensaje("No se pudo guardar: " + detalle, "error");
+
+      } finally {
+        botonGuardar.disabled = false;
+        botonGuardar.textContent = "Guardar en la base de datos";
+      }
+    });
+  </script>
+</body>
+</html>
