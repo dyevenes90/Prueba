@@ -1,0 +1,97 @@
+-- Ejecutar una sola vez en Supabase > SQL Editor.
+-- Usa únicamente la Publishable Key en la aplicación. Nunca uses una Secret Key en Electron.
+
+create extension if not exists pgcrypto;
+
+create table if not exists public.methodologies (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  version text not null default '1.0',
+  storage_path text not null unique,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.evaluation_audit (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  local_evaluation_id text not null,
+  document_name text not null,
+  document_hash text not null,
+  methodology_id uuid not null references public.methodologies(id),
+  verdict text not null,
+  score numeric not null,
+  model text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists methodologies_user_id_idx
+  on public.methodologies(user_id);
+create index if not exists evaluation_audit_user_id_idx
+  on public.evaluation_audit(user_id, created_at desc);
+
+alter table public.methodologies enable row level security;
+alter table public.evaluation_audit enable row level security;
+
+grant select, insert, update, delete on public.methodologies to authenticated;
+grant select, insert on public.evaluation_audit to authenticated;
+
+create policy "Usuarios leen sus metodologias"
+on public.methodologies for select
+to authenticated
+using ((select auth.uid()) = user_id);
+
+create policy "Usuarios crean sus metodologias"
+on public.methodologies for insert
+to authenticated
+with check ((select auth.uid()) = user_id);
+
+create policy "Usuarios actualizan sus metodologias"
+on public.methodologies for update
+to authenticated
+using ((select auth.uid()) = user_id)
+with check ((select auth.uid()) = user_id);
+
+create policy "Usuarios eliminan sus metodologias"
+on public.methodologies for delete
+to authenticated
+using ((select auth.uid()) = user_id);
+
+create policy "Usuarios leen su auditoria"
+on public.evaluation_audit for select
+to authenticated
+using ((select auth.uid()) = user_id);
+
+create policy "Usuarios crean su auditoria"
+on public.evaluation_audit for insert
+to authenticated
+with check ((select auth.uid()) = user_id);
+
+insert into storage.buckets (id, name, public)
+values ('metodologias', 'metodologias', false)
+on conflict (id) do update set public = false;
+
+create policy "Usuarios leen sus archivos de metodologia"
+on storage.objects for select
+to authenticated
+using (
+  bucket_id = 'metodologias'
+  and (storage.foldername(name))[1] = (select auth.uid())::text
+);
+
+create policy "Usuarios suben sus archivos de metodologia"
+on storage.objects for insert
+to authenticated
+with check (
+  bucket_id = 'metodologias'
+  and (storage.foldername(name))[1] = (select auth.uid())::text
+);
+
+create policy "Usuarios eliminan sus archivos de metodologia"
+on storage.objects for delete
+to authenticated
+using (
+  bucket_id = 'metodologias'
+  and (storage.foldername(name))[1] = (select auth.uid())::text
+);
