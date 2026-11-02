@@ -1,276 +1,90 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ingreso de datos | Diego</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#23343B">
+<title>CRESCE</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+:root{color-scheme:dark;color:#e3e9e7;background:#151b20;--muted:#a3b0b4;--line:#303b41;--accent:#9ac8b5}body{background:radial-gradient(ellipse at 85% 0,#26363055,transparent 45%),#151b20}html{scroll-padding-top:110px}.topbar{position:sticky;top:0;z-index:20;height:76px;padding:0 4vw;gap:22px;background:#192126f5;backdrop-filter:blur(16px);border-bottom:1px solid #344047}.brand{flex-shrink:0;letter-spacing:-.4px}.brand-mark{background:#b0d3c2;color:#1a3027;box-shadow:0 0 24px #a7cfb00c}.brand-caption{display:none}.topbar-tools{display:flex;align-items:center;gap:10px}.workspace-picker{position:relative}.workspace-picker summary{cursor:pointer;list-style:none;color:#c5d1ce;font-size:12px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;white-space:nowrap}.workspace-picker summary::-webkit-details-marker{display:none}.workspace-picker summary:after{content:'⌄';margin-left:12px;color:#8eaaa0}.top-menu{position:absolute;top:calc(100% + 12px);right:0;width:245px;background:#222d33;border:1px solid #405058;box-shadow:0 18px 50px #0005;border-radius:12px;padding:8px;z-index:25}.top-menu a{display:block;font-size:12px;padding:11px 12px;border-radius:6px}.top-menu a:hover{background:#33433f}.top-menu p{font-size:12px;color:var(--muted);padding:4px 12px;margin:6px 0}.top-menu strong{display:block;color:#e3e9e7}.search-wrap{position:relative;margin-left:auto;flex:1;max-width:350px}.global-search{background:#111a1f;border:1px solid #344149;padding:10px 12px 10px 35px;border-radius:9px;color:#e7eeeb;font-size:12px;width:100%}.global-search::placeholder{color:#93a2a8}.search-symbol{position:absolute;left:12px;top:8px;color:#a6b8b3;font-size:18px;pointer-events:none}.search-results{left:0;right:0;width:100%;max-height:330px;overflow:auto}.toolbar-link{font-size:12px;padding:10px 12px;background:#25352f;border:1px solid #41574b;border-radius:8px;color:#cfdfd4;white-space:nowrap}.icon-control summary{padding:9px;display:grid;place-items:center;min-width:36px;min-height:36px}.icon-control summary:after{display:none}.icon-control svg{width:17px;height:17px;stroke:#bccac7;fill:none;stroke-width:1.6}.profile summary{background:#344641;border-color:#51655a;color:#dae8df;font-size:11px;font-weight:700}.hero{padding-bottom:35px}.hero h1{font-weight:550;letter-spacing:-2px;color:#f0f4f1}.eyebrow{color:#9bb6a7;letter-spacing:2.3px}.hero-tag{background:#23372f;color:#b1c9b6;border:1px solid #3c5143}.dot{background:#a3c88f}.section-label{margin-top:32px}.section-label h2{color:#dce6df}.area-card{background:linear-gradient(140deg,#222d33,#1e272d);border-color:#354249;border-radius:16px;padding:30px;box-shadow:0 4px 18px #0000000a}.area-card:hover{border-color:#637e70;box-shadow:0 14px 36px #0002;transform:translateY(-2px)}.area-card h2{color:#e8efeb;font-size:24px}.area-card p{color:#acb9ba;line-height:1.75}.area-card:nth-child(1){--card-accent:#acd1ba}.area-card:nth-child(2){--card-accent:#dac4a1}.area-card:nth-child(3){--card-accent:#b4c5e6}.area-card:nth-child(4){--card-accent:#bdcf99}.area-icon{background:#ffffff08!important;color:var(--card-accent,#b3cfbb)!important;border:1px solid #ffffff14}.area-number{color:#90a09f}.tags span{background:#ffffff04;border-color:#ffffff0d;color:#a1b1ae}.enter{color:var(--card-accent,#bdd9c8);border-top-color:#3b484e;padding-top:18px}.enter:hover{color:#f0f6ed}.enter span{display:grid;place-items:center;border:1px solid #ffffff1a;background:#ffffff05;border-radius:7px;width:30px;height:30px}.home-note{background:#1d2b28;border-color:#35473d}.home-note strong{color:#c0d2c2}.home-note p{color:#a0b1a7}.home-note>span{color:#bdd3b5}footer{color:#a1b0ac;background:#151d22}.back{color:#b0c6bb}.workspace-heading p{color:var(--muted)}.sidebar{background:#1b252b;border-color:#344148}.sidebar a{color:#b9c5c4}.sidebar a:hover{background:#2b3b36}.sidebar a[aria-current=page]{background:#344b40;color:#e1eee3;box-shadow:none}.metric,.panel,.form-card{background:#202b31;border-color:#35434a}.metric strong{color:#e1eae5}.sample-row{border-color:#36434a}.sample-marker{color:#9cb3a7}.status{background:#2c4036;color:#c4d5b6}.demo-label{background:#3b3527;color:#dfcea5}.form-card input{background:#172127;border-color:#46565b;color:#e7eeeb}.form-card button{background:#a8cbb7;color:#17291f}.form-card button:hover{background:#bfdcc9}#mensaje.exito{background:#233e31;color:#c6ead2}#mensaje.error{background:#492c34;color:#ffced4}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid #b9d7c1;outline-offset:4px}summary:hover{border-color:#698173}h1:focus{outline:none}.page-heading p{color:var(--muted)}
+@media(max-width:1050px){.topbar{gap:12px;padding:0 22px}.toolbar-link{display:none}.search-wrap{max-width:260px}.workspace-picker summary{max-width:200px;overflow:hidden;text-overflow:ellipsis}.icon-control summary{overflow:visible}.brand{font-size:14px}}
+@media(max-width:760px){html{scroll-padding-top:140px}.topbar{height:auto;min-height:116px;flex-wrap:wrap;gap:10px;padding:13px 20px}.brand{order:0}.space-reference{order:1;margin-left:auto}.space-reference summary{max-width:210px}.search-wrap{order:3;max-width:none;flex-basis:65%;margin-left:0}.topbar-tools{order:4;margin-left:auto;gap:8px}.area-card{padding:25px}.hero h1{letter-spacing:-1.4px}.area-card h2{font-size:23px}.top-menu{max-width:calc(100vw - 40px)}.search-results{width:calc(100vw - 40px);max-width:350px}.section-label{gap:14px}.section-label span{max-width:140px;text-align:right}.workspace-heading{gap:12px}.workspace-heading .area-icon{flex-shrink:0}}
+@media(max-width:380px){.space-reference summary{max-width:170px}.search-wrap{flex-basis:58%}.brand{gap:8px}}
+/* CRESCE: navegación por áreas y marcas originales. */
+html{scroll-padding-top:145px}.topbar{height:120px;display:grid;grid-template-columns:190px minmax(450px,1fr) 260px;gap:26px;padding:12px 3vw;background:#303c47f7;border-bottom-color:#4a5861}.brand{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0}.brand strong{font-size:20px;line-height:1.15;letter-spacing:-.6px;font-weight:600}.brand>span{font-size:10px;font-weight:400;color:#c0cbc9;letter-spacing:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.area-shortcuts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:center;width:100%;max-width:750px;justify-self:center}.area-shortcut{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:94px;padding:6px 5px;border-radius:12px;border:1px solid transparent;color:#d9e1e3;transition:background .2s,border-color .2s}.area-shortcut>span:last-child{font-size:11px;text-align:center;line-height:1.3}.area-shortcut:hover,.area-shortcut[aria-current=page]{background:#ffffff09;border-color:#71858a}.shortcut-visual{display:flex;align-items:center;justify-content:center;height:52px;width:76px}.shortcut-visual img{display:block;width:100%;height:100%;object-fit:contain;object-position:center;filter:none;mix-blend-mode:normal}.shortcut-visual svg{width:32px;height:32px;color:#c7d4d5}.header-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}.header-actions .search-wrap{min-width:0;max-width:none;width:100%;margin:0;flex:1}.global-search{background:#23303a;border-color:#53636d;padding-left:31px;font-size:11px}.topbar-tools{gap:6px;margin:0}.topbar-tools summary{border-color:#586972;min-width:34px;min-height:36px;background:#ffffff05}.search-results{width:320px;left:auto;right:0}.top-menu{background:#283640;border-color:#53646d}.top-menu a:hover{background:#3b4f53}.topbar .topbar-tools svg{stroke:#e1e8e8}main{max-width:1640px;padding:30px 3vw 48px}.area-grid{gap:22px;grid-template-columns:repeat(4,minmax(0,1fr));align-items:stretch}.area-card{padding:26px 24px;min-width:0;min-height:390px}.card-top{height:136px;align-items:center;position:relative}.area-number{position:absolute;right:0;top:0;font-size:10px;color:#98a9aa}.original-logo{display:flex;align-items:center;justify-content:flex-start;width:100%;height:116px;margin-top:14px}.original-logo img{display:block;width:100%;max-width:145px;height:116px;object-fit:contain;object-position:left center;filter:none;mix-blend-mode:normal;border-radius:0}.card-top .area-icon{width:68px;height:68px;margin-top:14px}.card-top .area-icon svg{width:33px;height:33px}.area-card h2{font-size:22px;line-height:1.25;min-height:55px;margin:22px 0 12px}.area-card p{font-size:13px;line-height:1.8;margin-bottom:22px}.tags{margin-top:auto;margin-bottom:24px}.enter{background:#a9cbb8;color:#192d25;border:1px solid #bdd8c8;border-radius:9px;padding:11px 14px;min-height:46px;transition:background .2s}.enter:hover{background:#c2decd;color:#15271f}.enter span{width:auto;height:auto;border:0;background:none;font-size:18px}.workspace-heading .original-logo{width:76px;height:76px;margin:0;flex-shrink:0}.workspace-heading .original-logo img{width:76px;height:76px;object-position:center}.workspace-heading .area-icon{flex-shrink:0}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}.sidebar{position:sticky;top:146px}footer{padding-left:3vw;padding-right:3vw}
+@media(min-width:1400px){main{padding-left:3vw;padding-right:3vw}.topbar{grid-template-columns:210px minmax(500px,1fr) 310px}.area-card h2{font-size:24px}}
+@media(max-width:1150px){.topbar{grid-template-columns:160px minmax(370px,1fr) 210px;gap:14px;padding-left:22px;padding-right:22px}.brand strong{font-size:18px}.header-actions{gap:8px}.area-shortcut>span:last-child{font-size:10px}.area-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.area-card{min-height:380px}.area-card h2{min-height:0}.card-top{height:125px}}
+@media(max-width:900px){html{scroll-padding-top:200px}.topbar{height:auto;min-height:176px;grid-template-columns:1fr 1fr;gap:12px;padding:15px 22px}.brand{grid-column:1;grid-row:1}.brand strong{font-size:17px}.brand strong br{display:none}.brand>span{font-size:10px}.header-actions{grid-column:2;grid-row:1}.area-shortcuts{grid-column:1/-1;grid-row:2;max-width:none}.area-shortcut{min-height:80px}.shortcut-visual{height:46px;width:65px}.area-shortcut>span:last-child{font-size:11px}.sidebar{top:202px}main{padding:24px 22px 40px}}
+@media(max-width:600px){html{scroll-padding-top:220px}.topbar{padding:12px 16px;gap:12px;grid-template-columns:1fr auto}.brand strong{font-size:16px}.brand strong br{display:block}.header-actions{gap:7px;max-width:205px}.global-search{font-size:11px;padding:10px 8px 10px 28px}.search-symbol{left:9px}.topbar-tools{gap:5px}.topbar-tools summary{min-width:32px;padding:7px}.header-actions .search-wrap{flex-basis:auto}.area-shortcuts{gap:4px}.area-shortcut{padding:5px 2px;min-height:82px;gap:5px}.area-shortcut>span:last-child{font-size:10px;max-width:95px}.shortcut-visual{height:43px;width:58px}.shortcut-visual svg{width:29px;height:29px}.area-grid{grid-template-columns:1fr;gap:16px}.area-card{min-height:0;padding:24px}.area-card h2{font-size:24px;margin-top:18px}.area-card p{max-width:none}.card-top{height:130px}.original-logo,.original-logo img{height:120px}.original-logo img{max-width:150px}.search-results{position:fixed;top:90px;left:16px;right:16px;width:auto;max-width:none}.top-menu{max-width:calc(100vw - 32px)}main{padding:20px 16px 32px}.sidebar{position:static}.workspace-heading h1{font-size:25px}.workspace-heading .original-logo,.workspace-heading .original-logo img{width:64px;height:64px}.workspace-heading .original-logo{margin:0}footer{padding:20px 16px}}
+@media(prefers-reduced-motion:reduce){.area-shortcut,.enter{transition:none}}
+/* CRESCE · identidad y superficies de marca */
+:root{background:#23343B;color:#EDF3F1;--muted:#BDCBCF;--line:#50636A;--accent:#B9DCCB}body{background:#23343B}html{scroll-padding-top:174px}.topbar{height:150px;background:#D8E3E2;border-color:#B5C7C7;backdrop-filter:none;grid-template-columns:220px minmax(450px,1fr) 270px;gap:24px;color:#243B40}.brand{gap:7px}.brand strong{font-size:25px;font-weight:750;letter-spacing:2.5px;line-height:1.2}.brand .brand-motto{font-size:12px;letter-spacing:0;color:#465E61;white-space:normal}.brand #current-space{font-size:10px;font-weight:700;letter-spacing:1.5px;color:#385956;margin-top:4px}.area-shortcuts{gap:12px}.area-shortcut{min-height:124px;padding:7px;color:#263F44;border-radius:10px;gap:8px}.area-shortcut>span:last-child{font-size:11px;font-weight:650}.area-shortcut:hover,.area-shortcut[aria-current=page]{background:#C7D8D5;border-color:#8AA9A3}.shortcut-visual{height:86px;width:100px;padding:4px;background:#F3F5F0;border:1px solid #BECBC7;border-radius:7px}.shortcut-visual img{width:100%;height:100%;object-fit:contain;object-position:center;filter:none}.global-search{background:#EEF3F0;border-color:#A9BEBB;color:#263F44}.global-search::placeholder{color:#536C70}.search-symbol{color:#4E686B}.topbar-tools summary,.profile summary{border-color:#A9BEBB;background:#E8EFEB}.topbar .topbar-tools svg{stroke:#35545A}.top-menu{background:#2D424B;color:#EEF5F2;border-color:#698087}.top-menu p{color:#C8D5D6}.top-menu strong{color:#F1F6F2}.top-menu a:hover{background:#405D61}.area-card{background:#344850;border-color:#52666D;box-shadow:0 5px 22px #10252A24;padding:24px;min-height:480px}.area-card:hover{border-color:#99B7AA;box-shadow:0 12px 30px #10252A40}.card-top{height:200px;align-items:flex-end}.area-number{top:0;color:#BDCFCF;letter-spacing:1px}.original-logo{height:172px;width:100%;padding:9px;justify-content:center;background:#F3F5F0;border:1px solid #CFD8CE;border-radius:9px;margin:18px 0 0}.original-logo img{max-width:none;width:100%;height:100%;object-fit:contain;object-position:center;filter:none;mix-blend-mode:normal}.area-card h2{color:#F2F6F3;font-size:23px;margin-top:22px}.area-card p{color:#CBD7D9}.tags span{color:#D0DDDA;background:#253D4529;border-color:#ffffff18}.enter{background:#BDDAC8;border-color:#D1E6D7;color:#203D31}.enter:hover{background:#D4E9DA;color:#183124}.sidebar{background:#2C4149;border-color:#536970;top:176px}.sidebar a{color:#D2DDDF}.sidebar a:hover{background:#3B555B}.sidebar a[aria-current=page]{background:#4E6B62;color:#F3F7F1}.metric,.panel{background:#344850;border-color:#52666D}.metric strong{color:#F1F5EF}.sample-row{border-color:#51666B}.status{background:#486257;color:#DFECDD}.workspace-heading .original-logo{width:122px;height:122px;padding:6px;margin:0;flex-shrink:0}.workspace-heading .original-logo img{width:100%;height:100%;max-width:none}.workspace-heading h1{color:#F0F6F1}.back{color:#C5DDD0}footer{background:#203139;border-color:#4C6169;color:#BDCFCF}.topbar a:focus-visible,.topbar input:focus-visible,.topbar summary:focus-visible{outline-color:#32605A}.top-menu a:focus-visible{outline-color:#C6E5CB}.search-results{z-index:30}
+@media(min-width:1400px){.topbar{grid-template-columns:230px minmax(500px,1fr) 310px}.area-card h2{font-size:24px}.original-logo{height:190px}.card-top{height:218px}}
+@media(max-width:1200px){.topbar{grid-template-columns:175px minmax(400px,1fr) 230px;gap:14px;padding-left:22px;padding-right:22px}.brand strong{font-size:22px;letter-spacing:1.8px}.brand .brand-motto{font-size:11px}.area-shortcuts{gap:6px}.shortcut-visual{width:86px;height:82px}.area-shortcut>span:last-child{font-size:10px}.area-card{min-height:0}.area-card h2{min-height:0}}
+@media(max-width:1000px){html{scroll-padding-top:244px}.topbar{height:auto;min-height:218px;grid-template-columns:1fr 1fr;gap:13px;padding:17px 22px}.brand{grid-column:1;grid-row:1}.header-actions{grid-column:2;grid-row:1}.area-shortcuts{grid-column:1/-1;grid-row:2;max-width:none}.area-shortcut{min-height:113px}.shortcut-visual{width:100px;height:82px}.area-shortcut>span:last-child{font-size:11px}.sidebar{top:246px}.area-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.search-results{position:absolute;left:auto;right:0;top:calc(100% + 12px);width:320px}.brand .brand-motto{font-size:12px}}
+@media(max-width:600px){html{scroll-padding-top:278px}.topbar{padding:14px 12px;grid-template-columns:minmax(120px,1fr) minmax(0,190px);gap:12px;min-height:244px}.brand strong{font-size:20px;letter-spacing:1.5px}.brand .brand-motto{font-size:10px}.brand #current-space{font-size:9px;letter-spacing:1px}.header-actions{max-width:190px;gap:6px}.global-search{min-width:0;padding-left:25px;font-size:10px}.search-symbol{left:8px}.topbar-tools summary{min-width:30px;padding:6px}.area-shortcuts{gap:4px}.area-shortcut{min-height:116px;padding:5px 2px;gap:7px}.shortcut-visual{width:100%;max-width:90px;height:78px;padding:3px;border-radius:5px}.area-shortcut>span:last-child{font-size:10px;line-height:1.3;min-height:26px;display:flex;align-items:center;justify-content:center}.area-grid{grid-template-columns:1fr}.area-card{padding:24px}.card-top{height:230px}.original-logo{height:204px;padding:10px;max-width:none}.original-logo img{height:100%;max-width:none}.area-card h2{font-size:24px}.workspace-heading{align-items:center}.workspace-heading .original-logo{width:95px;height:95px;padding:5px}.workspace-heading .original-logo img{width:100%;height:100%}.workspace-heading h1{font-size:23px}.workspace-heading .eyebrow{font-size:9px;letter-spacing:1px}.workspace-heading p{font-size:11px}.sidebar{position:static}.search-results{position:fixed;top:100px;left:12px;right:12px;width:auto;max-width:none}}
+@media(max-width:360px){.topbar{grid-template-columns:120px minmax(0,1fr);gap:8px}.brand strong{font-size:18px}.brand .brand-motto{font-size:9px}.global-search{font-size:10px}.header-actions{gap:4px}.topbar-tools{gap:3px}.topbar-tools summary{min-width:28px}.shortcut-visual{height:68px}.area-shortcut>span:last-child{font-size:9px}}
 
-  <style>
-    :root {
-      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: #172033;
-      background: #f4f7fb;
-    }
+/* CRESCE · intercambio de superficies y ajustes de portada */
+:root{background:#D8E3E2;color:#243B40;--muted:#4C646A}body{background:#D8E3E2}.topbar{background:#23343B;color:#EDF4F1;border-bottom-color:#445B63;align-items:center}.brand{align-self:center;justify-content:center;gap:8px}.brand strong{color:#F0F6F2}.brand .brand-motto{color:#CCDBD8}.brand #current-space{color:#BFD7CF;margin-top:0}.area-shortcut{color:#DCEAE5}.area-shortcut:hover,.area-shortcut[aria-current=page]{background:#36514F;border-color:#7D9E93}.global-search{background:#30474F;color:#EDF5F1;border-color:#5C777A}.global-search::placeholder{color:#C1D2D1}.search-symbol{color:#C5D8D2}.topbar-tools summary,.profile summary{background:#30474F;border-color:#607C7C}.topbar .topbar-tools svg{stroke:#DCECE4}.topbar a:focus-visible,.topbar input:focus-visible,.topbar summary:focus-visible{outline-color:#C5E1CC}.workspace-heading h1{color:#243B40}.workspace-heading p{color:#4C646A}.back{color:#355D56}.workspace-heading .eyebrow{color:#496D62}.module-heading h2{color:#243B40}.module-description,.next-step{color:#4C646A}.metric span,.row-text small{color:#C1D0D1}.panel,.metric{color:#EDF3F1}.area-card .original-logo{background:transparent;border:0;border-radius:0;box-shadow:none;padding:5px;margin:0;width:100%;height:190px;justify-content:center}.area-card .original-logo img{width:100%;height:100%;max-width:none;object-fit:contain;object-position:center;filter:none}.area-card .card-top{height:200px;align-items:center}.area-card h2{margin-top:18px}.enter{position:relative;display:grid;place-items:center;min-height:44px;padding:11px 40px;border:1px solid #8FAFA8;background:#C8DCD5;color:#223F39;border-radius:8px;font-weight:650;line-height:1.4;text-align:center}.enter:hover{background:#E0EBE5;color:#1E3832;border-color:#C0D7CB}.enter span{position:absolute;right:16px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:18px;height:18px;line-height:1;font-size:17px;background:none;border:0}.enter:focus-visible{outline-color:#D5EAD8}footer{background:#CDDCDA;color:#3F5E62;border-color:#B0C4C1}
+@media(min-width:1400px){.area-card .original-logo{height:200px}.area-card .card-top{height:210px}}
+@media(max-width:600px){.brand{justify-content:center}.area-card .original-logo{height:210px;padding:5px}.area-card .card-top{height:220px}.enter{min-height:44px}}
 
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      min-height: 100vh;
-      margin: 0;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      background:
-        radial-gradient(circle at top left, rgba(62, 207, 142, 0.22), transparent 35%),
-        linear-gradient(135deg, #f7fafc, #edf4f8);
-    }
-
-    .card {
-      width: min(100%, 520px);
-      padding: 32px;
-      background: rgba(255, 255, 255, 0.95);
-      border: 1px solid rgba(23, 32, 51, 0.08);
-      border-radius: 22px;
-      box-shadow: 0 24px 70px rgba(23, 32, 51, 0.13);
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 7px 11px;
-      margin-bottom: 14px;
-      border-radius: 999px;
-      background: #e7f9f1;
-      color: #08744c;
-      font-size: 13px;
-      font-weight: 700;
-    }
-
-    h1 {
-      margin: 0 0 8px;
-      font-size: clamp(28px, 6vw, 38px);
-      line-height: 1.1;
-    }
-
-    .description {
-      margin: 0 0 26px;
-      color: #667085;
-      line-height: 1.55;
-    }
-
-    .field {
-      margin-bottom: 18px;
-    }
-
-    label {
-      display: block;
-      margin-bottom: 7px;
-      font-size: 14px;
-      font-weight: 700;
-    }
-
-    input {
-      width: 100%;
-      padding: 14px 15px;
-      border: 1px solid #cfd8e6;
-      border-radius: 12px;
-      background: #ffffff;
-      color: #172033;
-      font: inherit;
-      outline: none;
-      transition: border-color 160ms ease, box-shadow 160ms ease;
-    }
-
-    input:focus {
-      border-color: #3ecf8e;
-      box-shadow: 0 0 0 4px rgba(62, 207, 142, 0.17);
-    }
-
-    button {
-      width: 100%;
-      margin-top: 4px;
-      padding: 14px 18px;
-      border: 0;
-      border-radius: 12px;
-      background: #1f9d68;
-      color: white;
-      font: inherit;
-      font-weight: 800;
-      cursor: pointer;
-      transition: transform 150ms ease, opacity 150ms ease, background 150ms ease;
-    }
-
-    button:hover {
-      background: #188457;
-      transform: translateY(-1px);
-    }
-
-    button:disabled {
-      cursor: wait;
-      opacity: 0.65;
-      transform: none;
-    }
-
-    #mensaje {
-      display: none;
-      margin-top: 18px;
-      padding: 13px 14px;
-      border-radius: 11px;
-      font-size: 14px;
-      line-height: 1.45;
-    }
-
-    #mensaje.exito {
-      display: block;
-      background: #e7f9f1;
-      color: #08633f;
-      border: 1px solid #b7eed5;
-    }
-
-    #mensaje.error {
-      display: block;
-      background: #fff0f0;
-      color: #a51d2d;
-      border: 1px solid #ffc7cd;
-    }
-
-    .nota {
-      margin-top: 18px;
-      color: #7b8494;
-      font-size: 12px;
-      line-height: 1.5;
-      text-align: center;
-    }
-  </style>
+</style>
+<script src="app.js" defer></script>
 </head>
-
 <body>
-  <main class="card">
-    <div class="badge">● Conectado con Supabase</div>
-
-    <h1>Ingreso de información</h1>
-    <p class="description">
-      Completa ambos campos y presiona el botón para guardar los datos en la tabla
-      <strong>diego</strong>.
-    </p>
-
-    <form id="formulario">
-      <div class="field">
-        <label for="campo1">Campo 1</label>
-        <input
-          id="campo1"
-          name="campo1"
-          type="text"
-          placeholder="Escribe el contenido del campo 1"
-          required
-        />
-      </div>
-
-      <div class="field">
-        <label for="campo2">Campo 2</label>
-        <input
-          id="campo2"
-          name="campo2"
-          type="text"
-          placeholder="Escribe el contenido del campo 2"
-          required
-        />
-      </div>
-
-      <button id="botonGuardar" type="submit">Guardar en la base de datos</button>
-      <div id="mensaje" role="status" aria-live="polite"></div>
-    </form>
-
-    <div class="nota">
-      La página utiliza únicamente la clave pública/publishable de Supabase.
-      Nunca coloques aquí la clave <strong>service_role</strong>.
-    </div>
-  </main>
-
-  <!-- Librería oficial supabase-js, versión 2 -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-
-  <script>
-    /*
-      1. Reemplaza estos dos valores con los de tu proyecto:
-         Supabase > Project Settings > API
-
-      2. Usa la Project URL y la Publishable key o anon public key.
-         NUNCA uses la clave service_role en una página web.
-    */
-    const SUPABASE_URL = "https://ikutxjpdqqbbezpvhrlo.supabase.co";
-    const SUPABASE_PUBLIC_KEY = "sb_publishable_shz7mAcw21b6dwfg4VsKDg_UvnJshMD";
-
-    const clienteSupabase = window.supabase.createClient(
-      SUPABASE_URL,
-      SUPABASE_PUBLIC_KEY
-    );
-
-    const formulario = document.getElementById("formulario");
-    const campo1 = document.getElementById("campo1");
-    const campo2 = document.getElementById("campo2");
-    const botonGuardar = document.getElementById("botonGuardar");
-    const mensaje = document.getElementById("mensaje");
-
-    function mostrarMensaje(texto, tipo) {
-      mensaje.textContent = texto;
-      mensaje.className = tipo;
-    }
-
-    formulario.addEventListener("submit", async (evento) => {
-      evento.preventDefault();
-
-      const valor1 = campo1.value.trim();
-      const valor2 = campo2.value.trim();
-
-      if (!valor1 || !valor2) {
-        mostrarMensaje("Debes completar los dos campos.", "error");
-        return;
-      }
-
-      botonGuardar.disabled = true;
-      botonGuardar.textContent = "Guardando...";
-      mensaje.className = "";
-      mensaje.textContent = "";
-
-      try {
-        const { error } = await clienteSupabase
-          .from("diego")
-          .insert({
-            "1": valor1,
-            "2": valor2
-          });
-
-        if (error) {
-          throw error;
-        }
-
-        mostrarMensaje("Información guardada correctamente.", "exito");
-        formulario.reset();
-        campo1.focus();
-
-      } catch (error) {
-        console.error(error);
-
-        let detalle = error?.message || "Error desconocido.";
-
-        if (
-          SUPABASE_URL.includes("TU-PROYECTO") ||
-          SUPABASE_PUBLIC_KEY.includes("TU_CLAVE")
-        ) {
-          detalle = "Primero debes configurar la URL y la clave pública de Supabase dentro del archivo index.html.";
-        }
-
-        mostrarMensaje("No se pudo guardar: " + detalle, "error");
-
-      } finally {
-        botonGuardar.disabled = false;
-        botonGuardar.textContent = "Guardar en la base de datos";
-      }
+<header class="topbar">
+<a class="brand" href="#inicio"><strong>CRESCE</strong><span class="brand-motto">De la idea a la realidad.</span><span id="current-space" hidden></span></a>
+<nav class="area-shortcuts" aria-label="Áreas de trabajo"><a class="area-shortcut" href="#trovofarma/resumen"><span class="shortcut-visual"><img src="assets/logos/trovofarma.png" alt="Logo original de Trovofarma Store" width="328" height="361"></span><span>Trovofarma Store</span></a><a class="area-shortcut" href="#casa-del-filo/resumen"><span class="shortcut-visual"><img src="assets/logos/La Casa del Filo.png" alt="Logo original de La Casa del Filo" width="375" height="374"></span><span>La Casa del Filo</span></a><a class="area-shortcut" href="#proyectos/resumen"><span class="shortcut-visual"><img src="assets/logos/Gestion de proyectos.png" alt="Logo original de Gestión de Proyectos" width="1024" height="1024"></span><span>Gestión de Proyectos</span></a><a class="area-shortcut" href="#strongroot/resumen"><span class="shortcut-visual"><img src="assets/logos/Logo Strongroot.png" alt="Logo original de StrongRoot" width="1024" height="1024"></span><span>StrongRoot</span></a></nav>
+<div class="header-actions">
+<div class="search-wrap"><span class="search-symbol" aria-hidden="true">⌕</span><input id="global-search" class="global-search" type="search" placeholder="Buscar secciones…" aria-label="Buscar áreas y secciones" aria-controls="search-results" autocomplete="off"><nav id="search-results" class="top-menu search-results" aria-label="Resultados de búsqueda" hidden></nav></div>
+<nav class="topbar-tools" aria-label="Herramientas">
+<details class="workspace-picker icon-control"><summary aria-label="Notificaciones" title="Notificaciones"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17h14l-2-3V9a5 5 0 0 0-10 0v5l-2 3Z M10 20h4"/></svg></summary><div class="top-menu"><p><strong>Notificaciones</strong></p><p>Sin notificaciones por ahora. Este panel aún no está conectado a eventos.</p></div></details>
+<details class="workspace-picker icon-control profile"><summary aria-label="Perfil y configuración" title="Perfil y configuración"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3 3-1 3 1 1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3-3 1-3-1Z"/><circle cx="12" cy="12" r="3"/></svg></summary><nav class="top-menu" aria-label="Perfil y configuración"><p><strong>Espacio local</strong>Perfil de demostración</p><a id="settings-link" href="#trovofarma/configuracion">Configuración del espacio</a><p>Las preferencias se organizan dentro de cada área.</p></nav></details>
+</nav></div>
+</header>
+<main id="contenido" tabindex="-1"></main>
+<footer>CRESCE <span>De la idea a la realidad.</span><a href="#inicio">Inicio ↑</a></footer>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const search = document.getElementById('global-search');
+  const results = document.getElementById('search-results');
+  const spaces = document.querySelectorAll('.topbar details');
+  const destinations = [{name:'Inicio',href:'#inicio'},...areas.flatMap(a=>a.modules.map(m=>({name:a.name+' · '+m,href:'#'+a.id+'/'+slug(m)})))];
+  const normalize = value => value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  function updateSpace(){
+    const area = areas.find(a=>a.id===location.hash.slice(1).split('/')[0]);
+    const currentSpace=document.getElementById('current-space');
+    currentSpace.textContent=area?area.name:'';
+    currentSpace.hidden=!area;
+    document.getElementById('settings-link').href='#'+(area?area.id:'trovofarma')+'/configuracion';
+    document.querySelectorAll('.area-shortcut').forEach(link=>{
+      if(area && link.hash.split('/')[0]==='#'+area.id) link.setAttribute('aria-current','page');
+      else link.removeAttribute('aria-current');
     });
-  </script>
+    results.hidden=true;
+    search.value='';
+    spaces.forEach(d=>d.open=false);
+  }
+  search.addEventListener('input',()=>{
+    results.replaceChildren();
+    const query=normalize(search.value.trim());
+    if(!query){results.hidden=true;return;}
+    const matches=destinations.filter(d=>normalize(d.name).includes(query)).slice(0,10);
+    for(const match of matches){const link=document.createElement('a');link.href=match.href;link.textContent=match.name;results.append(link);}
+    if(!matches.length){const empty=document.createElement('p');empty.textContent='No hay secciones con ese nombre.';results.append(empty);}
+    results.hidden=false;
+  });
+  search.addEventListener('keydown',event=>{if(event.key==='Escape'){results.hidden=true;}if(event.key==='Enter'){const first=results.querySelector('a');if(first&&!results.hidden){event.preventDefault();first.click();}}});
+  spaces.forEach(detail=>detail.addEventListener('toggle',()=>{if(detail.open)spaces.forEach(other=>{if(other!==detail)other.open=false;});}));
+  document.addEventListener('click',event=>{if(!event.target.closest('.search-wrap'))results.hidden=true;spaces.forEach(d=>{if(!d.contains(event.target))d.open=false;});});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'){spaces.forEach(d=>d.open=false);results.hidden=true;}});
+  document.querySelector('.topbar').addEventListener('click',event=>{if(event.target.closest('a')){results.hidden=true;spaces.forEach(d=>d.open=false);}});
+  window.addEventListener('hashchange',updateSpace);
+  updateSpace();
+});
+</script>
 </body>
 </html>
