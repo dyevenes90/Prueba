@@ -6,3 +6,9 @@ verify_jwt = true
 
 [functions.compra-agil-seguimiento]
 verify_jwt = true
+
+[functions.compra-agil-detalle]
+verify_jwt = true
+
+[functions.compra-agil-documentos]
+verify_jwt = true
