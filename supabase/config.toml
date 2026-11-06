@@ -1,0 +1,8 @@
+[functions.compra-agil-sync]
+verify_jwt = false
+
+[functions.cresce-dashboard]
+verify_jwt = true
+
+[functions.compra-agil-seguimiento]
+verify_jwt = true

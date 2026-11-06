@@ -31,6 +31,37 @@ function text(value: unknown, max = 120) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
+function normalizeRegion(value: unknown) {
+  return text(value, 100)
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLocaleLowerCase("es")
+    .replace(/^region\s+de\s+/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeCode(value: unknown) {
+  return text(value, 100).replace(/\s+/g, "").toLocaleUpperCase("es");
+}
+
+async function readPages(
+  makePage: (from: number, to: number) => PromiseLike<{
+    data: Record<string, unknown>[] | null;
+    error: unknown;
+  }>,
+) {
+  const rows: Record<string, unknown>[] = [];
+  for (let from = 0; from < 10_000; from += 1000) {
+    const { data, error } = await makePage(from, from + 999);
+    if (error) return { rows, error: true, parcial: false };
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length < 1000) return { rows, error: false, parcial: false };
+  }
+  return { rows, error: false, parcial: true };
+}
+
 Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -85,7 +116,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     if (error) {
       return reply({ error: "No se pudo cargar el resumen comercial" }, 500);
     }
-    const counts = new Map<string, number>();
+    const counts = new Map<string, { region: string; cantidad: number }>();
     const rows = [...(regions.data ?? [])];
     for (
       let offset = rows.length;
@@ -106,16 +137,22 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       if ((data?.length ?? 0) < 1000) break;
     }
     for (const row of rows) {
-      const name = text(row.region, 100);
-      if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+      const rawName = text(row.region, 100);
+      const key = normalizeRegion(rawName);
+      if (!key) continue;
+      const name = rawName.replace(/^regi[oó]n\s+de\s+/iu, "").trim();
+      const count = counts.get(key);
+      if (count) {
+        count.cantidad++;
+        if (name.length < count.region.length) count.region = name;
+      } else counts.set(key, { region: name, cantidad: 1 });
     }
     return reply({
       oportunidades: allCount.count ?? 0,
       cierres_futuros_verificables: upcomingCount.count ?? 0,
-      compras_por_region: [...counts].map(([region, cantidad]) => ({
-        region,
-        cantidad,
-      })).sort((a, b) => b.cantidad - a.cantidad),
+      compras_por_region: [...counts.values()].sort((a, b) =>
+        b.cantidad - a.cantidad
+      ),
       regiones_parcial: rows.length >= 10_000,
       consultas_recientes: executions.data ?? [],
     });
@@ -162,68 +199,54 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       return reply({ error: "Rango de monto inválido" }, 400);
     }
 
-    const { data, error } = await db.from("compra_agil_oportunidades")
-      .select(
-        "codigo, nombre, descripcion, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre, estado, datos_originales, primera_deteccion, ultima_revision",
-        { count: "exact" },
-      )
-      .order(sort, { ascending, nullsFirst: false })
-      .range(0, 999);
-    if (error) {
+    const result = await readPages((start, end) => {
+      let request = db.from("compra_agil_oportunidades")
+        .select(
+          "codigo, nombre, descripcion, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre, estado, datos_originales, primera_deteccion, ultima_revision",
+        )
+        .order(sort, { ascending, nullsFirst: false })
+        .order("codigo", { ascending: true });
+      if (from) {
+        request = request.gte(
+          "fecha_publicacion",
+          `${from}T00:00:00.000Z`,
+        );
+      }
+      if (to) {
+        const dayAfter = new Date(`${to}T00:00:00.000Z`);
+        dayAfter.setUTCDate(dayAfter.getUTCDate() + 1);
+        request = request.lt("fecha_publicacion", dayAfter.toISOString());
+      }
+      if (min !== null) request = request.gte("monto_estimado", min);
+      if (max !== null) request = request.lte("monto_estimado", max);
+      const safeQuery = query.replace(/[,*()%_\\]/g, " ").trim();
+      if (safeQuery) {
+        request = request.or(
+          `codigo.ilike.%${safeQuery}%,nombre.ilike.%${safeQuery}%,organismo.ilike.%${safeQuery}%`,
+        );
+      }
+      return request.range(start, end);
+    });
+    if (result.error) {
       return reply(
         { error: "No se pudieron consultar las oportunidades" },
         500,
       );
     }
 
-    let rows = (data ?? []).filter((row) => {
-      if (region && row.region !== region) return false;
-      const publication = typeof row.fecha_publicacion === "string"
-        ? row.fecha_publicacion.slice(0, 10)
-        : "";
-      if (from && publication < from) return false;
-      if (to && publication > to) return false;
-      if (
-        min !== null &&
-        (typeof row.monto_estimado !== "number" || row.monto_estimado < min)
-      ) return false;
-      if (
-        max !== null &&
-        (typeof row.monto_estimado !== "number" || row.monto_estimado > max)
-      ) return false;
-      if (
-        query &&
-        ![row.codigo, row.nombre, row.organismo].some((value) =>
-          typeof value === "string" &&
-          value.toLocaleLowerCase("es").includes(query)
-        )
-      ) return false;
-      return true;
-    });
-    if (
-      sort === "monto_estimado" || sort === "fecha_publicacion" ||
-      sort === "fecha_cierre" || sort === "nombre"
-    ) {
-      rows.sort((a, b) => {
-        const left = a[sort];
-        const right = b[sort];
-        if (left == null) return 1;
-        if (right == null) return -1;
-        const cmp = typeof left === "number" && typeof right === "number"
-          ? left - right
-          : String(left).localeCompare(String(right), "es");
-        return ascending ? cmp : -cmp;
-      });
-    }
+    const regionKey = normalizeRegion(region);
+    const rows = regionKey
+      ? result.rows.filter((row) => normalizeRegion(row.region) === regionKey)
+      : result.rows;
     const totalFiltrado = rows.length;
     const limit = 25;
-    rows = rows.slice((page - 1) * limit, page * limit);
+    const items = rows.slice((page - 1) * limit, page * limit);
     return reply({
-      items: rows,
+      items,
       total: totalFiltrado,
       pagina: page,
       por_pagina: limit,
-      parcial: (data?.length ?? 0) >= 1000,
+      parcial: result.parcial,
     });
   }
 
@@ -250,35 +273,89 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     const query = text(input.texto, 100).toLocaleLowerCase("es");
     const requestedProvider = text(input.proveedor, 40).toLocaleLowerCase("es");
     // Las columnas de estas fuentes varían por catálogo; se leen páginas acotadas y se proyecta en memoria.
-    const [providersResult, productsResult, pricesResult, coneResult] =
-      await Promise.all([
-        db.from("trovo_proveedores").select("*").limit(50),
-        db.from("trovo_productos_proveedor").select("*").limit(1000),
-        db.from("trovo_precios_proveedor").select("*").limit(2000),
-        db.from("trovo_cone_catalogo_revisado").select(
-          "proveedor_clave, codigo_proveedor, nombre_producto, pagina_pdf, precio_catalogo_iva, costo_iva_verificado, unidad_precio, estado_validacion",
-        ).limit(1000),
-      ]);
-    const errors = [providersResult, productsResult, pricesResult, coneResult]
-      .flatMap((result, index) =>
-        result.error
-          ? [["proveedores", "productos", "precios", "catalogo_cone"][index]]
-          : []
+    if (
+      requestedProvider &&
+      !["cone", "herbanatura", "silcam"].includes(requestedProvider)
+    ) {
+      return reply({ error: "Proveedor no vÃ¡lido" }, 400);
+    }
+    const safeQuery = query.replace(/[,*()%_\\]/g, " ").trim();
+    const providersResult = await readPages((start, end) => {
+      let request = db.from("trovo_proveedores").select("id, clave").order(
+        "clave",
       );
-    if (errors.length === 4) {
+      if (requestedProvider) {
+        request = request.ilike("clave", requestedProvider);
+      }
+      return request.range(start, end);
+    });
+    const errors: string[] = [];
+    if (providersResult.error) errors.push("proveedores");
+    const providers = new Map<string, Record<string, unknown>>(
+      providersResult.rows.map((row) => [String(row.id), row]),
+    );
+    const providerIds = providersResult.rows
+      .filter((row) =>
+        !requestedProvider ||
+        text(row.clave, 40).toLocaleLowerCase("es") === requestedProvider
+      )
+      .map((row) => row.id);
+    const productsResult = !requestedProvider || providerIds.length
+      ? await readPages((start, end) => {
+        let request = db.from("trovo_productos_proveedor").select("*").order(
+          "id",
+        );
+        if (requestedProvider) {
+          request = request.in("proveedor_id", providerIds);
+        }
+        if (safeQuery) {
+          request = request.or(
+            `codigo_proveedor.ilike.%${safeQuery}%,clave_articulo.ilike.%${safeQuery}%,nombre.ilike.%${safeQuery}%`,
+          );
+        }
+        return request.range(start, end);
+      })
+      : { rows: [], error: false, parcial: false };
+    const coneResult = !requestedProvider || requestedProvider === "cone"
+      ? await readPages((start, end) => {
+        let request = db.from("trovo_cone_catalogo_revisado").select("*").order(
+          "codigo_proveedor",
+        );
+        if (safeQuery) {
+          request = request.or(
+            `codigo_proveedor.ilike.%${safeQuery}%,nombre_producto.ilike.%${safeQuery}%,proveedor_clave.ilike.%${safeQuery}%`,
+          );
+        }
+        return request.range(start, end);
+      })
+      : { rows: [], error: false, parcial: false };
+    if (productsResult.error) errors.push("productos");
+    if (coneResult.error) errors.push("catalogo_cone");
+    if (errors.length >= 3) {
       return reply({ error: "No se pudieron consultar los catálogos" }, 500);
     }
 
-    const providers = new Map<string, Record<string, unknown>>(
-      (providersResult.data ?? []).filter(isRecord).map((
-        row,
-      ): [string, Record<string, unknown>] => [String(row.id), row]),
-    );
     const pricesByProduct = new Map<string, Record<string, unknown>[]>();
-    for (const raw of pricesResult.data ?? []) {
-      if (!isRecord(raw) || raw.producto_id == null) continue;
-      const key = String(raw.producto_id);
-      pricesByProduct.set(key, [...(pricesByProduct.get(key) ?? []), raw]);
+    let pricesParcial = false;
+    const productIds = productsResult.rows.map((row) => row.id).filter((id) =>
+      id != null
+    );
+    for (let offset = 0; offset < productIds.length; offset += 250) {
+      const ids = productIds.slice(offset, offset + 250);
+      const priceResult = await readPages((start, end) =>
+        db.from("trovo_precios_proveedor").select("*").in("producto_id", ids)
+          .order("producto_id").range(start, end)
+      );
+      if (priceResult.error) {
+        if (!errors.includes("precios")) errors.push("precios");
+        continue;
+      }
+      pricesParcial ||= priceResult.parcial;
+      for (const raw of priceResult.rows) {
+        if (raw.producto_id == null) continue;
+        const key = String(raw.producto_id);
+        pricesByProduct.set(key, [...(pricesByProduct.get(key) ?? []), raw]);
+      }
     }
     const safeKeys = [
       "id",
@@ -300,52 +377,150 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       "unidad",
       "formato",
     ];
-    const items: Record<string, unknown>[] = [];
-    for (const raw of productsResult.data ?? []) {
-      if (!isRecord(raw)) continue;
+    type CatalogItem = {
+      proveedor: string;
+      codigo: string;
+      producto: Record<string, unknown>;
+      precios: Record<string, unknown>[];
+      fuentes: Set<string>;
+    };
+    const grouped = new Map<string, CatalogItem>();
+    const getItem = (provider: string, code: unknown, fallback: unknown) => {
+      const displayCode = text(code, 100);
+      const keyCode = normalizeCode(displayCode) || `id:${String(fallback)}`;
+      const key = `${provider.toLocaleLowerCase("es")}\u0000${keyCode}`;
+      let item = grouped.get(key);
+      if (!item) {
+        item = {
+          proveedor: provider,
+          codigo: displayCode,
+          producto: {},
+          precios: [],
+          fuentes: new Set<string>(),
+        };
+        grouped.set(key, item);
+      }
+      return item;
+    };
+    const mergeProduct = (
+      target: Record<string, unknown>,
+      source: Record<string, unknown>,
+      preferSource: boolean,
+    ) => {
+      for (const [key, value] of Object.entries(source)) {
+        if (value === null || value === undefined || value === "") continue;
+        if (
+          preferSource || target[key] === null || target[key] === undefined ||
+          target[key] === ""
+        ) {
+          target[key] = value;
+        }
+      }
+    };
+    for (const raw of productsResult.rows) {
       const provider = providers.get(String(raw.proveedor_id));
       const providerKey = text(provider?.clave, 40).toLocaleLowerCase("es");
       if (requestedProvider && providerKey !== requestedProvider) continue;
       const product = safeProjection(raw, safeKeys);
       const productPrices = (pricesByProduct.get(String(raw.id)) ?? []).map((
         price,
-      ) => safeProjection(price, safeKeys));
-      const searchable = JSON.stringify([product, provider?.clave])
-        .toLocaleLowerCase("es");
-      if (query && !searchable.includes(query)) continue;
-      items.push({
-        proveedor: provider?.clave ?? "Proveedor no identificado",
-        producto: product,
-        precios: productPrices,
-      });
+      ) => ({
+        ...safeProjection(price, safeKeys),
+        fuente_origen: "trovo_precios_proveedor",
+      }));
+      const item = getItem(
+        providerKey || "Proveedor no identificado",
+        raw.codigo_proveedor ?? raw.clave_articulo,
+        raw.id,
+      );
+      mergeProduct(item.producto, product, false);
+      item.fuentes.add("trovo_productos_proveedor");
+      if (productPrices.length) item.fuentes.add("trovo_precios_proveedor");
+      item.precios.push(...productPrices);
     }
-    for (const raw of coneResult.data ?? []) {
-      if (!isRecord(raw)) continue;
-      const row = safeProjection(raw, [
-        "proveedor_clave",
-        "codigo_proveedor",
-        "nombre_producto",
-        "pagina_pdf",
-        "precio_catalogo_iva",
-        "costo_iva_verificado",
-        "unidad_precio",
-        "estado_validacion",
-      ]);
-      const searchable = JSON.stringify(row).toLocaleLowerCase("es");
+    const coneKeys = [
+      "proveedor_clave",
+      "codigo_proveedor",
+      "nombre_producto",
+      "pagina_pdf",
+      "precio_catalogo_iva",
+      "costo_iva_verificado",
+      "unidad_precio",
+      "estado_validacion",
+      "fecha_vigencia",
+    ];
+    for (const raw of coneResult.rows) {
+      const row = safeProjection(raw, coneKeys);
       const providerKey = text(row.proveedor_clave, 40).toLocaleLowerCase("es");
       if (requestedProvider && requestedProvider !== "cone") continue;
-      if (query && !searchable.includes(query)) continue;
-      items.push({
-        proveedor: "cone",
-        producto: row,
-        precios: [],
-        origen: "trovo_cone_catalogo_revisado",
-      });
+      const item = getItem(
+        providerKey || "cone",
+        row.codigo_proveedor,
+        row.codigo_proveedor,
+      );
+      const mapped = {
+        ...row,
+        nombre: row.nombre_producto,
+        estado_revision: row.estado_validacion,
+        presentacion_precio: row.unidad_precio,
+      };
+      mergeProduct(item.producto, mapped, true);
+      item.fuentes.add("trovo_cone_catalogo_revisado");
+      if (
+        row.precio_catalogo_iva !== null &&
+        row.precio_catalogo_iva !== undefined
+      ) {
+        item.precios.push({
+          precio_publicado_clp: row.precio_catalogo_iva,
+          presentacion_precio: row.unidad_precio,
+          estado_validacion: row.estado_validacion,
+          fecha_vigencia: row.fecha_vigencia,
+          fuente_origen: "trovo_cone_catalogo_revisado",
+        });
+      }
     }
+    const needle = query.normalize("NFD").replace(/\p{M}/gu, "");
+    const items = [...grouped.values()].filter((item) => {
+      if (!needle) return true;
+      const contents = JSON.stringify(item.producto).normalize("NFD")
+        .replace(/\p{M}/gu, "").toLocaleLowerCase("es");
+      return normalizeCode(item.codigo).includes(normalizeCode(query)) ||
+        contents.includes(needle);
+    }).map((item) => {
+      const prices = [
+        ...new Set(
+          item.precios.map((price) => {
+            const value = Number(price.precio_publicado_clp);
+            return Number.isFinite(value) ? value : null;
+          }).filter((value): value is number => value !== null),
+        ),
+      ];
+      const conflicto = prices.length > 1;
+      const reviewedValue = item.proveedor.toLocaleLowerCase("es") === "cone"
+        ? item.producto.precio_catalogo_iva
+        : null;
+      const reviewed = reviewedValue == null || reviewedValue === ""
+        ? Number.NaN
+        : Number(reviewedValue);
+      const candidate = Number.isFinite(reviewed)
+        ? reviewed
+        : prices[0] ?? null;
+      return {
+        proveedor: item.proveedor,
+        codigo: item.codigo,
+        producto: item.producto,
+        precios: item.precios,
+        fuentes: [...item.fuentes],
+        conflicto_precios: conflicto,
+        precio_publicado_con_iva: conflicto ? null : candidate,
+        parcial: productsResult.parcial || coneResult.parcial || pricesParcial,
+      };
+    });
     return reply({
       items: items.slice(0, 300),
       errores_fuentes: errors,
-      parcial: items.length > 300,
+      parcial: productsResult.parcial || coneResult.parcial || pricesParcial ||
+        items.length > 300,
     });
   }
 
