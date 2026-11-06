@@ -1,7 +1,7 @@
 -- Evaluaciones comerciales privadas por oportunidad.
 -- No aplicar en producción sin revisión explícita.
 CREATE TABLE IF NOT EXISTS public.compra_agil_decisiones (
-  codigo TEXT NOT NULL REFERENCES public.compra_agil_oportunidades(codigo) ON DELETE CASCADE,
+  codigo TEXT NOT NULL REFERENCES public.compra_agil_oportunidades(codigo),
   tipo TEXT NOT NULL CHECK (tipo IN ('producto', 'gastos', 'requisito')),
   clave TEXT NOT NULL,
   datos JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(datos) = 'object'),
