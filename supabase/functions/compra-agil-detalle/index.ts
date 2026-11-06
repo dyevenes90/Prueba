@@ -93,26 +93,71 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     const upstream = await fetch(url, {
       method: "GET",
       headers: { ticket, Accept: "application/json" },
-      signal: AbortSignal.timeout(25_000),
+      signal: AbortSignal.timeout(45_000),
     });
+    const response: unknown = await upstream.json().catch(() => null);
     if (!upstream.ok) {
-      const status = upstream.status === 404
-        ? 404
-        : upstream.status === 429
-        ? 429
-        : 502;
+      const apiError = isRecord(response) && Array.isArray(response.errors)
+        ? response.errors.find(isRecord)
+        : undefined;
+      const apiCode = apiError && typeof apiError.codigo === "string"
+        ? apiError.codigo
+        : String(upstream.status);
+      const cause = apiCode === "404"
+        ? "La API oficial no encuentra ese código; verifica que el proceso exista y sea visible."
+        : apiCode === "429"
+        ? "La cuota diaria de la API se agotó; reintenta cuando se restablezca."
+        : apiCode === "401" || apiCode === "403"
+        ? "La API rechazó la autenticación del servidor; revisa la configuración privada."
+        : upstream.status >= 500
+        ? "La API oficial está temporalmente indisponible; reintenta más tarde."
+        : `La API oficial rechazó la consulta (código ${apiCode}).`;
+      console.warn("CRESCE_DETALLE_API_ERROR", {
+        codigo,
+        httpStatus: upstream.status,
+        apiCode,
+      });
+      const status = apiCode === "404" ? 404 : apiCode === "429" ? 429 : 502;
+      return reply({ error: cause, codigo_error_api: apiCode }, status);
+    }
+    if (!isRecord(response)) {
+      console.warn("CRESCE_DETALLE_API_INVALID_JSON", { codigo });
+      return reply({
+        error: "La API oficial devolvió una respuesta que no es JSON válido.",
+      }, 502);
+    }
+    if (response.success === "NOK") {
+      const apiError = Array.isArray(response.errors)
+        ? response.errors.find(isRecord)
+        : undefined;
+      const apiCode = apiError && typeof apiError.codigo === "string"
+        ? apiError.codigo
+        : "NOK";
+      const cause = apiCode === "404"
+        ? "La API oficial no encuentra ese código; verifica que el proceso exista y sea visible."
+        : apiCode === "429"
+        ? "La cuota diaria de la API se agotó; reintenta cuando se restablezca."
+        : apiCode === "401" || apiCode === "403"
+        ? "La API rechazó la autenticación del servidor; revisa la configuración privada."
+        : `La API oficial rechazó la consulta (código ${apiCode}).`;
+      console.warn("CRESCE_DETALLE_API_ERROR", { codigo, apiCode });
+      return reply(
+        { error: cause, codigo_error_api: apiCode },
+        apiCode === "404" ? 404 : apiCode === "429" ? 429 : 502,
+      );
+    }
+    if (response.success !== "OK" || !isRecord(response.payload)) {
+      console.warn("CRESCE_DETALLE_API_INCOMPLETE", { codigo });
+      return reply(
+        { error: "La API oficial no incluyó un detalle completo." },
+        502,
+      );
+    }
+    if (response.payload.codigo !== codigo) {
+      console.warn("CRESCE_DETALLE_CODE_MISMATCH", { codigo });
       return reply({
         error:
-          `Mercado Público no entregó el detalle (HTTP ${upstream.status})`,
-      }, status);
-    }
-    const response: unknown = await upstream.json();
-    if (
-      !isRecord(response) || response.success !== "OK" ||
-      !isRecord(response.payload) || response.payload.codigo !== codigo
-    ) {
-      return reply({
-        error: "La respuesta oficial del detalle está incompleta",
+          "La API oficial devolvió un detalle para otro código; no se guardó.",
       }, 502);
     }
 
@@ -127,9 +172,15 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       return reply({ error: "No se pudo guardar el detalle oficial" }, 500);
     }
     return reply({ guardado: true, codigo });
-  } catch {
+  } catch (error) {
+    const tipo = error instanceof Error ? error.name : "ErrorDesconocido";
+    const timeout = tipo === "TimeoutError";
+    console.error("CRESCE_DETALLE_ERROR", { codigo, tipo });
     return reply({
-      error: "Error o tiempo de espera al consultar Mercado Público",
+      error: timeout
+        ? "La consulta a Mercado Público superó el tiempo límite; puedes reintentar."
+        : "No se pudo conectar con Mercado Público; puedes reintentar.",
+      tipo,
     }, 502);
   }
 }));
