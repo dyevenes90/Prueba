@@ -135,6 +135,46 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
   }
   const db = ctx.supabaseAdmin;
 
+  if (input.accion === "decision_leer" || input.accion === "decision_guardar") {
+    const codigo = str(input.codigo, 40);
+    if (!/^\d+-\d+-COT\d{2}$/.test(codigo)) {
+      return reply({ error: "Código de oportunidad inválido" }, 400);
+    }
+    if (input.accion === "decision_leer") {
+      const { data, error } = await db.from("compra_agil_decisiones")
+        .select("codigo, tipo, clave, datos, updated_at").eq("codigo", codigo);
+      if (error) return reply({ error: "No se pudo leer la evaluación" }, 500);
+      return reply({ decisions: data ?? [] });
+    }
+    const tipo = str(input.tipo, 20);
+    const clave = str(input.clave, 180);
+    if (
+      !(["producto", "gastos", "requisito"].includes(tipo)) || !clave ||
+      !isRecord(input.datos) || JSON.stringify(input.datos).length > 12_000
+    ) {
+      return reply({ error: "Datos de evaluación inválidos" }, 400);
+    }
+    const opportunity = await db.from("compra_agil_oportunidades")
+      .select("codigo").eq("codigo", codigo).maybeSingle();
+    if (opportunity.error) {
+      return reply({ error: "No se pudo validar la oportunidad" }, 500);
+    }
+    if (!opportunity.data) {
+      return reply({ error: "La oportunidad no existe" }, 404);
+    }
+    const { data, error } = await db.from("compra_agil_decisiones").upsert({
+      codigo,
+      tipo,
+      clave,
+      datos: input.datos,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "codigo,tipo,clave" }).select(
+      "codigo, tipo, clave, datos, updated_at",
+    ).single();
+    if (error) return reply({ error: "No se pudo guardar la evaluación" }, 500);
+    return reply({ decision: data });
+  }
+
   if (input.accion === "proveedores") {
     const result = await allPages((from, to) =>
       db.from("trovo_proveedores").select("id, clave").order("clave")
