@@ -21,6 +21,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function retryDelayMs(response: Response): number | null {
+  const value = response.headers.get("retry-after");
+  if (!value) return 500;
+  const seconds = Number(value);
+  const dateDelay = Number.isFinite(seconds)
+    ? seconds * 1000
+    : Date.parse(value) - Date.now();
+  return Number.isFinite(dateDelay) && dateDelay >= 0 && dateDelay <= 5000
+    ? Math.max(500, dateDelay)
+    : null;
+}
+
+function apiFailureClass(status: number): string {
+  if (status === 401 || status === 403) return "autenticacion";
+  if (status === 404) return "no_encontrado";
+  if (status === 429) return "cuota_agotada";
+  if ([502, 503, 504].includes(status)) return "fallo_transitorio";
+  if (status >= 500) return "fallo_servidor";
+  return "error_http";
+}
+
 Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -90,11 +111,35 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
         encodeURIComponent(codigo)
       }`,
     );
-    const upstream = await fetch(url, {
-      method: "GET",
-      headers: { ticket, Accept: "application/json" },
-      signal: AbortSignal.timeout(45_000),
-    });
+    const requestStarted = performance.now();
+    let upstream: Response | null = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const attemptStarted = performance.now();
+      upstream = await fetch(url, {
+        method: "GET",
+        headers: { ticket, Accept: "application/json" },
+        signal: AbortSignal.timeout(45_000),
+      });
+      const retryable = [502, 503, 504].includes(upstream.status);
+      if (!retryable || attempt === 2) break;
+      const delay = retryDelayMs(upstream);
+      console.warn("CRESCE_DETALLE_API_ERROR", {
+        httpStatus: upstream.status,
+        durationMs: Math.round(performance.now() - attemptStarted),
+        classification: delay === null
+          ? "fallo_transitorio_sin_reintento_por_retry_after"
+          : "fallo_transitorio_reintentando",
+      });
+      if (delay === null) break;
+      await upstream.body?.cancel().catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    if (!upstream) {
+      return reply(
+        { error: "No se recibió respuesta de Mercado Público." },
+        502,
+      );
+    }
     const response: unknown = await upstream.json().catch(() => null);
     if (!upstream.ok) {
       const apiError = isRecord(response) && Array.isArray(response.errors)
@@ -112,16 +157,23 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
         : upstream.status >= 500
         ? "La API oficial está temporalmente indisponible; reintenta más tarde."
         : `La API oficial rechazó la consulta (código ${apiCode}).`;
-      console.warn("CRESCE_DETALLE_API_ERROR", {
-        codigo,
+      console.error("CRESCE_DETALLE_API_ERROR", {
         httpStatus: upstream.status,
-        apiCode,
+        durationMs: Math.round(performance.now() - requestStarted),
+        classification: apiFailureClass(upstream.status),
       });
       const status = apiCode === "404" ? 404 : apiCode === "429" ? 429 : 502;
-      return reply({ error: cause, codigo_error_api: apiCode }, status);
+      const error = [502, 503, 504].includes(upstream.status)
+        ? `Detalle oficial pendiente: Mercado Público continúa con HTTP ${upstream.status} tras un reintento.`
+        : cause;
+      return reply({ error, codigo_error_api: apiCode }, status);
     }
     if (!isRecord(response)) {
-      console.warn("CRESCE_DETALLE_API_INVALID_JSON", { codigo });
+      console.warn("CRESCE_DETALLE_API_INVALID_JSON", {
+        httpStatus: upstream.status,
+        durationMs: Math.round(performance.now() - requestStarted),
+        classification: "respuesta_no_json",
+      });
       return reply({
         error: "La API oficial devolvió una respuesta que no es JSON válido.",
       }, 502);
@@ -140,21 +192,34 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
         : apiCode === "401" || apiCode === "403"
         ? "La API rechazó la autenticación del servidor; revisa la configuración privada."
         : `La API oficial rechazó la consulta (código ${apiCode}).`;
-      console.warn("CRESCE_DETALLE_API_ERROR", { codigo, apiCode });
+      console.error("CRESCE_DETALLE_API_ERROR", {
+        httpStatus: upstream.status,
+        durationMs: Math.round(performance.now() - requestStarted),
+        classification: "respuesta_nok",
+        apiCode,
+      });
       return reply(
         { error: cause, codigo_error_api: apiCode },
         apiCode === "404" ? 404 : apiCode === "429" ? 429 : 502,
       );
     }
     if (response.success !== "OK" || !isRecord(response.payload)) {
-      console.warn("CRESCE_DETALLE_API_INCOMPLETE", { codigo });
+      console.warn("CRESCE_DETALLE_API_INCOMPLETE", {
+        httpStatus: upstream.status,
+        durationMs: Math.round(performance.now() - requestStarted),
+        classification: "respuesta_incompleta",
+      });
       return reply(
         { error: "La API oficial no incluyó un detalle completo." },
         502,
       );
     }
     if (response.payload.codigo !== codigo) {
-      console.warn("CRESCE_DETALLE_CODE_MISMATCH", { codigo });
+      console.warn("CRESCE_DETALLE_CODE_MISMATCH", {
+        httpStatus: upstream.status,
+        durationMs: Math.round(performance.now() - requestStarted),
+        classification: "codigo_no_coincide",
+      });
       return reply({
         error:
           "La API oficial devolvió un detalle para otro código; no se guardó.",
