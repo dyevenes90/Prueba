@@ -66,7 +66,7 @@ function summarize(rows: Row[]) {
   };
 }
 
-Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
+Deno.serve(withSupabase({ auth: "user", cors: { headers: corsHeaders } }, async (req, ctx) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return reply({ error: "MÃƒÆ’Ã‚Â©todo no permitido" }, 405);
   const userId = ctx.userClaims?.id;
