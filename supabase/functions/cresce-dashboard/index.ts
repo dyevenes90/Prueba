@@ -93,29 +93,44 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
 
   if (input.consulta === "resumen") {
     const now = new Date().toISOString();
-    const [allCount, upcomingCount, regions, executions] = await Promise.all([
+    const [allCount, regions, executions, lastSuccessResult] = await Promise.all([
       db.from("compra_agil_oportunidades").select("codigo", {
         count: "exact",
         head: true,
       }),
-      db.from("compra_agil_oportunidades").select("codigo", {
-        count: "exact",
-        head: true,
-      }).gt("fecha_cierre", now),
       db.from("compra_agil_oportunidades").select("region").not(
         "region",
         "is",
         null,
       ).limit(1000),
       db.from("compra_agil_ejecuciones").select(
-        "inicio, termino, estado, oportunidades_encontradas, oportunidades_nuevas",
+        "inicio, termino, estado, oportunidades_encontradas, oportunidades_nuevas, error_detalle",
       ).order("inicio", { ascending: false }).limit(5),
+      db.from("compra_agil_ejecuciones").select("termino").eq("estado", "completada").not("termino", "is", null).order("termino", { ascending: false }).limit(1).maybeSingle(),
     ]);
-    const error = allCount.error ?? upcomingCount.error ?? regions.error ??
-      executions.error;
+    const error = allCount.error ?? regions.error ??
+      executions.error ?? lastSuccessResult.error;
     if (error) {
       return reply({ error: "No se pudo cargar el resumen comercial" }, 500);
     }
+    const opportunityDates = await readPages((start, end) =>
+      db.from("compra_agil_oportunidades").select(
+        "fecha_cierre",
+      ).range(start, end)
+    );
+    if (opportunityDates.error) {
+      return reply({ error: "No se pudo verificar la actualidad de las oportunidades" }, 500);
+    }
+    const nowMs = Date.now();
+    const dateStatus = (row: Record<string, unknown>) => {
+      const raw = row.fecha_cierre;
+      if (typeof raw !== "string" || !/(Z|[+-]\d{2}:\d{2})$/i.test(raw)) return "no_verificable";
+      const timestamp = Date.parse(raw);
+      if (!Number.isFinite(timestamp)) return "no_verificable";
+      return timestamp > nowMs ? "abierta_confirmada" : "vencida";
+    };
+    const opportunityRows = opportunityDates.rows;
+    const lastSuccessful = lastSuccessResult.data;
     const counts = new Map<string, { region: string; cantidad: number }>();
     const rows = [...(regions.data ?? [])];
     for (
@@ -149,7 +164,14 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     }
     return reply({
       oportunidades: allCount.count ?? 0,
-      cierres_futuros_verificables: upcomingCount.count ?? 0,
+      cierres_futuros_verificables: opportunityRows.filter((row) => dateStatus(row) === "abierta_confirmada").length,
+      abiertas_confirmadas: opportunityRows.filter((row) => dateStatus(row) === "abierta_confirmada").length,
+      vencidas: opportunityRows.filter((row) => dateStatus(row) === "vencida").length,
+      fecha_no_verificable: opportunityRows.filter((row) => dateStatus(row) === "no_verificable").length,
+      vigencia_parcial: opportunityDates.parcial,
+      ultima_sincronizacion_exitosa: lastSuccessful?.termino ?? null,
+      ultima_ejecucion: executions.data?.[0] ?? null,
+      sincronizacion_antigua: !lastSuccessful?.termino || nowMs - Date.parse(String(lastSuccessful.termino)) > 24 * 60 * 60 * 1000,
       compras_por_region: [...counts.values()].sort((a, b) =>
         b.cantidad - a.cantidad
       ),
@@ -234,15 +256,31 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       );
     }
 
+    const onlyCurrent = input.solo_vigentes === true;
+    const currentTime = Date.now();
+    const isConfirmedOpen = (row: Record<string, unknown>) => {
+      const closing = row.fecha_cierre;
+      return typeof closing === "string" &&
+        /(Z|[+-]\d{2}:\d{2})$/i.test(closing) &&
+        Number.isFinite(Date.parse(closing)) && Date.parse(closing) > currentTime;
+    };
+
     const regionKey = normalizeRegion(region);
-    const rows = regionKey
+    let rows = regionKey
       ? result.rows.filter((row) => normalizeRegion(row.region) === regionKey)
       : result.rows;
+    if (onlyCurrent) rows = rows.filter(isConfirmedOpen);
     const totalFiltrado = rows.length;
     const limit = 25;
     const items = rows.slice((page - 1) * limit, page * limit);
     return reply({
-      items,
+      items: items.map((row) => ({
+        ...row,
+        vigencia: isConfirmedOpen(row) ? "abierta_confirmada" :
+          typeof row.fecha_cierre === "string" && /(Z|[+-]\d{2}:\d{2})$/i.test(row.fecha_cierre) && Number.isFinite(Date.parse(row.fecha_cierre))
+            ? "vencida"
+            : "no_verificable",
+      })),
       total: totalFiltrado,
       pagina: page,
       por_pagina: limit,
@@ -271,22 +309,13 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
 
   if (input.consulta === "proveedores") {
     const query = text(input.texto, 100).toLocaleLowerCase("es");
-    const requestedProvider = text(input.proveedor, 40).toLocaleLowerCase("es");
+    const requestedProvider = text(input.proveedor, 120).toLocaleLowerCase("es");
     // Las columnas de estas fuentes varían por catálogo; se leen páginas acotadas y se proyecta en memoria.
-    if (
-      requestedProvider &&
-      !["cone", "herbanatura", "silcam"].includes(requestedProvider)
-    ) {
-      return reply({ error: "Proveedor no vÃ¡lido" }, 400);
-    }
     const safeQuery = query.replace(/[,*()%_\\]/g, " ").trim();
     const providersResult = await readPages((start, end) => {
       let request = db.from("trovo_proveedores").select("id, clave").order(
         "clave",
       );
-      if (requestedProvider) {
-        request = request.ilike("clave", requestedProvider);
-      }
       return request.range(start, end);
     });
     const errors: string[] = [];
@@ -297,7 +326,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     const providerIds = providersResult.rows
       .filter((row) =>
         !requestedProvider ||
-        text(row.clave, 40).toLocaleLowerCase("es") === requestedProvider
+        text(row.clave, 120).toLocaleLowerCase("es") === requestedProvider
       )
       .map((row) => row.id);
     const productsResult = !requestedProvider || providerIds.length
@@ -316,8 +345,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
         return request.range(start, end);
       })
       : { rows: [], error: false, parcial: false };
-    const coneResult = !requestedProvider || requestedProvider === "cone"
-      ? await readPages((start, end) => {
+    const coneResult = await readPages((start, end) => {
         let request = db.from("trovo_cone_catalogo_revisado").select("*").order(
           "codigo_proveedor",
         );
@@ -327,8 +355,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
           );
         }
         return request.range(start, end);
-      })
-      : { rows: [], error: false, parcial: false };
+      });
     if (productsResult.error) errors.push("productos");
     if (coneResult.error) errors.push("catalogo_cone");
     if (errors.length >= 3) {
@@ -452,7 +479,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     for (const raw of coneResult.rows) {
       const row = safeProjection(raw, coneKeys);
       const providerKey = text(row.proveedor_clave, 40).toLocaleLowerCase("es");
-      if (requestedProvider && requestedProvider !== "cone") continue;
+      if (requestedProvider && ![providerKey, "cone"].includes(requestedProvider)) continue;
       const item = getItem(
         providerKey || "cone",
         row.codigo_proveedor,
@@ -518,6 +545,8 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     });
     return reply({
       items: items.slice(0, 300),
+      proveedores: providersResult.rows.map((row) => ({ clave: text(row.clave, 120) })).filter((row) => row.clave),
+      proveedores_parcial: providersResult.parcial,
       errores_fuentes: errors,
       parcial: productsResult.parcial || coneResult.parcial || pricesParcial ||
         items.length > 300,

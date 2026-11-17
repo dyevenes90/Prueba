@@ -408,6 +408,13 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
             " ",
           ).trim() === region
     );
+    const isConfirmedOpen = (row: Record<string, unknown>) => {
+      const closing = row.fecha_cierre;
+      return typeof closing === "string" &&
+        /(Z|[+-]\d{2}:\d{2})$/i.test(closing) &&
+        Number.isFinite(Date.parse(closing)) && Date.parse(closing) > Date.now();
+    };
+    if (filters.solo_vigentes === true) rows = rows.filter(isConfirmedOpen);
     const codes = rows.map((r) => String(r.codigo));
     const detailRows: Record<string, unknown>[] = [],
       trackRows: Record<string, unknown>[] = [];
@@ -486,7 +493,13 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     }
     const total = rows.length, size = 25;
     return reply({
-      items: rows.slice((page - 1) * size, page * size),
+      items: rows.slice((page - 1) * size, page * size).map((row) => ({
+        ...row,
+        vigencia: isConfirmedOpen(row) ? "abierta_confirmada" :
+          typeof row.fecha_cierre === "string" && /(Z|[+-]\d{2}:\d{2})$/i.test(row.fecha_cierre) && Number.isFinite(Date.parse(row.fecha_cierre))
+            ? "vencida"
+            : "no_verificable",
+      })),
       total,
       pagina: page,
       por_pagina: size,
