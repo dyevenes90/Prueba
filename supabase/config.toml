@@ -12,3 +12,6 @@ verify_jwt = true
 
 [functions.compra-agil-documentos]
 verify_jwt = true
+
+[functions.trovo-catalogos-revision]
+verify_jwt = true
