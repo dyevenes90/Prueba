@@ -32,13 +32,45 @@ function text(value: unknown, max = 120) {
 }
 
 function normalizeRegion(value: unknown) {
-  return text(value, 100)
+  const normalized = text(value, 100)
     .normalize("NFD")
     .replace(/\p{M}/gu, "")
     .toLocaleLowerCase("es")
-    .replace(/^region\s+de\s+/u, "")
+    .replace(/^region\s+(de|del)\s+/u, "")
     .replace(/\s+/g, " ")
     .trim();
+  const aliases: Record<string, string> = {
+    "la araucania": "araucania", "metropolitana de santiago": "metropolitana",
+    santiago: "metropolitana", "ohiggins": "o'higgins",
+    "libertador general bernardo o'higgins": "o'higgins",
+    "aysen del general carlos ibanez del campo": "aysen",
+    "magallanes y la antartica": "magallanes",
+    "magallanes y de la antartica chilena": "magallanes",
+  };
+  return aliases[normalized] ?? normalized;
+}
+
+const OFFICIAL_REGIONS: Record<string, string> = {
+  tarapaca: "Región de Tarapacá", antofagasta: "Región de Antofagasta",
+  atacama: "Región de Atacama", coquimbo: "Región de Coquimbo",
+  valparaiso: "Región de Valparaíso", "o'higgins": "Región del Libertador General Bernardo O'Higgins",
+  "libertador general bernardo o'higgins": "Región del Libertador General Bernardo O'Higgins",
+  ohiggins: "Región del Libertador General Bernardo O'Higgins", maule: "Región del Maule",
+  biobio: "Región del Biobío", araucania: "Región de La Araucanía",
+  "la araucania": "Región de La Araucanía", "los lagos": "Región de Los Lagos",
+  aysen: "Región de Aysén del General Carlos Ibáñez del Campo",
+  "aysen del general carlos ibanez del campo": "Región de Aysén del General Carlos Ibáñez del Campo",
+  magallanes: "Región de Magallanes y de la Antártica Chilena",
+  "magallanes y la antartica": "Región de Magallanes y de la Antártica Chilena",
+  "magallanes y de la antartica chilena": "Región de Magallanes y de la Antártica Chilena",
+  metropolitana: "Región Metropolitana de Santiago", "metropolitana de santiago": "Región Metropolitana de Santiago",
+  santiago: "Región Metropolitana de Santiago", "los rios": "Región de Los Ríos",
+  "arica y parinacota": "Región de Arica y Parinacota", nuble: "Región de Ñuble",
+};
+
+function officialRegionName(value: unknown) {
+  const key = normalizeRegion(value);
+  return OFFICIAL_REGIONS[key] ?? text(value, 100);
 }
 
 function normalizeCode(value: unknown) {
@@ -115,7 +147,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     }
     const opportunityDates = await readPages((start, end) =>
       db.from("compra_agil_oportunidades").select(
-        "fecha_cierre",
+        "fecha_cierre, estado, ultima_revision, datos_originales",
       ).range(start, end)
     );
     if (opportunityDates.error) {
@@ -127,7 +159,13 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       if (typeof raw !== "string" || !/(Z|[+-]\d{2}:\d{2})$/i.test(raw)) return "no_verificable";
       const timestamp = Date.parse(raw);
       if (!Number.isFinite(timestamp)) return "no_verificable";
-      return timestamp > nowMs ? "abierta_confirmada" : "vencida";
+      if (timestamp <= nowMs) return "vencida";
+      const original = isRecord(row.datos_originales) ? row.datos_originales : {};
+      const originalState = isRecord(original.estado) ? original.estado.codigo : null;
+      const state = text(row.estado ?? originalState, 40).toLocaleLowerCase("es");
+      const lastChecked = typeof row.ultima_revision === "string" ? Date.parse(row.ultima_revision) : NaN;
+      const recent = Number.isFinite(lastChecked) && lastChecked <= nowMs + 30_000 && nowMs - lastChecked <= 24 * 60 * 60 * 1000;
+      return state === "publicada" && recent ? "abierta_confirmada" : "no_verificable";
     };
     const opportunityRows = opportunityDates.rows;
     const lastSuccessful = lastSuccessResult.data;
@@ -155,7 +193,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       const rawName = text(row.region, 100);
       const key = normalizeRegion(rawName);
       if (!key) continue;
-      const name = rawName.replace(/^regi[oó]n\s+de\s+/iu, "").trim();
+      const name = officialRegionName(rawName);
       const count = counts.get(key);
       if (count) {
         count.cantidad++;
@@ -258,12 +296,18 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
 
     const onlyCurrent = input.solo_vigentes === true;
     const currentTime = Date.now();
-    const isConfirmedOpen = (row: Record<string, unknown>) => {
+    const opportunityStatus = (row: Record<string, unknown>) => {
       const closing = row.fecha_cierre;
-      return typeof closing === "string" &&
-        /(Z|[+-]\d{2}:\d{2})$/i.test(closing) &&
-        Number.isFinite(Date.parse(closing)) && Date.parse(closing) > currentTime;
+      if (typeof closing !== "string" || !/(Z|[+-]\d{2}:\d{2})$/i.test(closing) || !Number.isFinite(Date.parse(closing))) return "no_verificable";
+      if (Date.parse(closing) <= currentTime) return "vencida";
+      const original = isRecord(row.datos_originales) ? row.datos_originales : {};
+      const originalState = isRecord(original.estado) ? original.estado.codigo : null;
+      const state = text(row.estado ?? originalState, 40).toLocaleLowerCase("es");
+      const checked = typeof row.ultima_revision === "string" ? Date.parse(row.ultima_revision) : NaN;
+      const recent = Number.isFinite(checked) && checked <= currentTime + 30_000 && currentTime - checked <= 24 * 60 * 60 * 1000;
+      return state === "publicada" && recent ? "abierta_confirmada" : "no_verificable";
     };
+    const isConfirmedOpen = (row: Record<string, unknown>) => opportunityStatus(row) === "abierta_confirmada";
 
     const regionKey = normalizeRegion(region);
     let rows = regionKey
@@ -276,10 +320,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     return reply({
       items: items.map((row) => ({
         ...row,
-        vigencia: isConfirmedOpen(row) ? "abierta_confirmada" :
-          typeof row.fecha_cierre === "string" && /(Z|[+-]\d{2}:\d{2})$/i.test(row.fecha_cierre) && Number.isFinite(Date.parse(row.fecha_cierre))
-            ? "vencida"
-            : "no_verificable",
+        vigencia: opportunityStatus(row),
       })),
       total: totalFiltrado,
       pagina: page,

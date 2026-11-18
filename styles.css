@@ -50,3 +50,5 @@
 .ca-workspace .ca-warning,.ca-workspace .ca-stock-note,.ca-workspace .ca-status[data-kind=warning]{color:#624b13;background:#fff7df}
 .ca-workspace .ca-source-tags,.ca-workspace .ca-verified{color:#245a43}
 .ca-workspace .ca-preliminary{color:#74500b}
+
+.ca-sync-controls{display:grid;grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) auto;gap:12px;align-items:end;margin:12px 0}.ca-sync-controls label{display:flex;flex-direction:column;gap:6px;font-size:12px}.ca-sync-controls input,.ca-sync-controls select{width:100%;min-width:0;padding:9px;border:1px solid #9aa99d;border-radius:7px;background:#fff;color:#263a32}@media(max-width:760px){.ca-sync-controls{grid-template-columns:1fr}}
