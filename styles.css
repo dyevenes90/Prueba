@@ -68,3 +68,8 @@
 .ca-document-analysis details{padding:8px;border:1px solid #d5ded6;border-radius:7px}
 .ca-document-analysis summary{cursor:pointer;color:#263a32}
 .ca-document-analysis textarea{box-sizing:border-box;width:100%;min-width:0}
+.ca-sync-date-info{display:grid;gap:4px;align-content:center;color:#46594f;font-size:.9rem}
+.ca-sync-result{grid-column:1/-1;margin:0;padding:10px;border-radius:7px;background:#f1f5f0;color:#263a32;overflow-wrap:anywhere}
+.ca-sync-result[data-kind=error]{background:#fff0ed;color:#7d2418}
+.ca-sync-result[data-kind=warning]{background:#fff7df;color:#604900}
+.ca-sync-result[data-kind=loading]{background:#edf4fb;color:#173b57}
