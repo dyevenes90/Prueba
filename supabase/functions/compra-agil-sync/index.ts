@@ -397,14 +397,19 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
       } catch (error) {
         failure = error instanceof Error ? error.message : "Error durante la sincronización";
       }
-      const stateLabel = failure ? "error" : complete ? "completada" : "completada_con_errores";
-      await finish(stateLabel, found, inserted, failure);
+      const quotaExhausted = failure === "Cuota diaria de ChileCompra agotada; cursor sin avanzar";
+      const stateLabel = failure ? quotaExhausted ? "cuota_agotada" : "error"
+        : complete ? "completada" : "parcial_por_limite";
+      const executionNote = failure ?? (!complete
+        ? "Límite seguro de páginas por ejecución; checkpoint conservado para continuar"
+        : null);
+      await finish(stateLabel, found, inserted, executionNote);
       await db.from("compra_agil_sync_state").update({
-        lock_until: new Date(0).toISOString(), lock_token: null, last_error: failure, updated_at: new Date().toISOString(),
+        lock_until: new Date(0).toISOString(), lock_token: null, last_error: executionNote, updated_at: new Date().toISOString(),
       }).eq("region_id", regionId).eq("lock_token", runId);
-      summaries.push({ region: regionId, nombre: REGIONS[regionId], estado: stateLabel, paginas_consultadas: pages, oportunidades_encontradas: found, nuevas: inserted, actualizadas: updated, cambio_desde: windowFrom, cambio_hasta: windowTo, error: failure });
+      summaries.push({ region: regionId, nombre: REGIONS[regionId], estado: stateLabel, paginas_consultadas: pages, oportunidades_encontradas: found, nuevas: inserted, actualizadas: updated, cambio_desde: windowFrom, cambio_hasta: windowTo, paginas_pendientes: complete ? 0 : Math.max(0, (totalPages ?? page) - page), error: failure, continuable: !complete && !failure });
     }
-    return json({ sincronizacion: "incremental", regiones: summaries, paginas_maximas_por_ejecucion: MAX_PAGES_PER_RUN, cuota_agotada: summaries.some((row) => row.error === "Cuota diaria de ChileCompra agotada; cursor sin avanzar") });
+    return json({ sincronizacion: "incremental", regiones: summaries, paginas_maximas_por_ejecucion: MAX_PAGES_PER_RUN, cuota_agotada: summaries.some((row) => row.estado === "cuota_agotada") });
   }
 
   return json({ error: "Acción no válida" }, 400);

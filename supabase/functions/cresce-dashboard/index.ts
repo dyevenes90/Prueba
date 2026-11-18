@@ -125,7 +125,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
 
   if (input.consulta === "resumen") {
     const now = new Date().toISOString();
-    const [allCount, regions, executions, lastSuccessResult] = await Promise.all([
+    const [allCount, regions, executions, lastSuccessResult, syncStateResult, partialResult] = await Promise.all([
       db.from("compra_agil_oportunidades").select("codigo", {
         count: "exact",
         head: true,
@@ -139,9 +139,11 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
         "inicio, termino, estado, oportunidades_encontradas, oportunidades_nuevas, error_detalle",
       ).order("inicio", { ascending: false }).limit(5),
       db.from("compra_agil_ejecuciones").select("termino").eq("estado", "completada").not("termino", "is", null).order("termino", { ascending: false }).limit(1).maybeSingle(),
+      db.from("compra_agil_sync_state").select("region_id, cursor_success, window_from, window_to, next_page, total_pages, lock_until, last_success_at, last_attempt_at, last_error").order("last_attempt_at", { ascending: false, nullsFirst: false }).limit(16),
+      db.from("compra_agil_ejecuciones").select("inicio, termino, estado, oportunidades_encontradas, oportunidades_nuevas, error_detalle").eq("estado", "parcial_por_limite").order("inicio", { ascending: false }).limit(1).maybeSingle(),
     ]);
-    const error = allCount.error ?? regions.error ??
-      executions.error ?? lastSuccessResult.error;
+    const error = allCount.error ?? regions.error ?? executions.error ??
+      lastSuccessResult.error;
     if (error) {
       return reply({ error: "No se pudo cargar el resumen comercial" }, 500);
     }
@@ -169,6 +171,15 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     };
     const opportunityRows = opportunityDates.rows;
     const lastSuccessful = lastSuccessResult.data;
+    const syncStates = syncStateResult.error ? [] : syncStateResult.data ?? [];
+    const latestCheckpointSuccess = syncStates.map((row) => row.last_success_at)
+      .filter((value): value is string => typeof value === "string")
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+    const latestSuccessAt = latestCheckpointSuccess ?? lastSuccessful?.termino ?? null;
+    const pendingCheckpoints = syncStates.filter((row) => row.window_from && row.window_to)
+      .map((row) => ({ region_id: row.region_id, window_from: row.window_from, window_to: row.window_to, next_page: row.next_page, total_pages: row.total_pages, last_error: row.last_error }));
+    const inProgressCheckpoints = syncStates.filter((row) => row.lock_until && Date.parse(row.lock_until) > nowMs);
+    const latestPartial = partialResult.error ? null : partialResult.data;
     const counts = new Map<string, { region: string; cantidad: number }>();
     const rows = [...(regions.data ?? [])];
     for (
@@ -207,9 +218,15 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       vencidas: opportunityRows.filter((row) => dateStatus(row) === "vencida").length,
       fecha_no_verificable: opportunityRows.filter((row) => dateStatus(row) === "no_verificable").length,
       vigencia_parcial: opportunityDates.parcial,
-      ultima_sincronizacion_exitosa: lastSuccessful?.termino ?? null,
+      ultima_sincronizacion_exitosa: latestSuccessAt,
       ultima_ejecucion: executions.data?.[0] ?? null,
-      sincronizacion_antigua: !lastSuccessful?.termino || nowMs - Date.parse(String(lastSuccessful.termino)) > 24 * 60 * 60 * 1000,
+      ultimo_avance_parcial: latestPartial,
+      checkpoints_disponibles: !syncStateResult.error,
+      regiones_pendientes: pendingCheckpoints,
+      regiones_en_progreso: inProgressCheckpoints.map((row) => ({ region_id: row.region_id, lock_until: row.lock_until })),
+      ejecucion_en_progreso: Boolean(inProgressCheckpoints.length || (executions.data?.[0]?.estado === "iniciada" && nowMs - Date.parse(String(executions.data[0].inicio)) < 5 * 60 * 1000)),
+      paginas_pendientes: pendingCheckpoints.reduce((sum, row) => sum + Math.max(1, Number(row.total_pages ?? row.next_page) - Number(row.next_page) + 1), 0),
+      sincronizacion_antigua: !latestSuccessAt || nowMs - Date.parse(String(latestSuccessAt)) > 24 * 60 * 60 * 1000,
       compras_por_region: [...counts.values()].sort((a, b) =>
         b.cantidad - a.cantidad
       ),
