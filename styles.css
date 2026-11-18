@@ -73,3 +73,5 @@
 .ca-sync-result[data-kind=error]{background:#fff0ed;color:#7d2418}
 .ca-sync-result[data-kind=warning]{background:#fff7df;color:#604900}
 .ca-sync-result[data-kind=loading]{background:#edf4fb;color:#173b57}
+
+.ca-provider-matches{display:grid;gap:.55rem;margin:.6rem 0}.ca-match-candidate{padding:.7rem;border:1px solid #cbd7cf;border-radius:9px;background:#f7faf8;color:#263a32}.ca-match-candidate p,.ca-match-candidate small{display:block;overflow-wrap:anywhere}.ca-match-staging{border-style:dashed;background:#fffaf0}.ca-match-staging small{color:#614b21}

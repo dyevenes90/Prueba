@@ -95,7 +95,26 @@ Deno.serve(withSupabase({ auth: "user", cors: { headers: corsHeaders } }, async 
     return reply({ importaciones: imports ?? [], importacion_id: selected, filas: rows ?? [] });
   }
 
-  if (action !== "previsualizar" && action !== "guardar") return reply({ error: "AcciÃƒÆ’Ã‚Â³n no vÃƒÆ’Ã‚Â¡lida" }, 400);
+  if (action !== "previsualizar" && action !== "guardar" && action !== "candidatos") return reply({ error: "AcciÃƒÆ’Ã‚Â³n no vÃƒÆ’Ã‚Â¡lida" }, 400);
+  if (action === "candidatos") {
+    let input: unknown;
+    try { input = await req.json(); } catch { return reply({ error: "Solicitud JSON inválida" }, 400); }
+    const body = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const query = typeof body.q === "string" ? body.q.trim().replace(/[^\p{L}\p{N}\s-]/gu, " ").replace(/\s+/g, " ").slice(0, 100) : "";
+    const importId = typeof body.importacion_id === "string" && /^[0-9a-f-]{36}$/i.test(body.importacion_id) ? body.importacion_id : null;
+    const from = Number.isInteger(body.offset) ? Math.max(0, Math.min(100_000, Number(body.offset))) : 0;
+    if (query.length < 2) return reply({ error: "Escribe al menos dos caracteres para buscar" }, 400);
+    let request = db.from("trovo_importacion_proveedor_filas")
+      .select("id, importacion_id, proveedor_clave, codigo_proveedor, nombre_producto, precio, tratamiento_iva, fuente_original, identidad_proveedor, marca, categoria, linea, presentacion, pagina_fuente, ubicacion_fuente, estado_precio, stock_referencial, stock_confirmado, estado_iva, unidad_precio, proveedor_confirmado, importacion:trovo_importaciones_proveedor!inner(id, nombre_archivo, estado, estado_carga)")
+      .eq("importacion.estado", "pendiente_revision").eq("importacion.estado_carga", "completa")
+      .or(`codigo_proveedor.ilike.%${query}%,nombre_producto.ilike.%${query}%,marca.ilike.%${query}%,categoria.ilike.%${query}%,presentacion.ilike.%${query}%`)
+      .order("numero_fila").range(from, from + 49);
+    if (importId) request = request.eq("importacion_id", importId);
+    const { data: rows, error } = await request;
+    if (error) return reply({ error: "No se pudieron consultar los catálogos privados en revisión" }, 500);
+    return reply({ candidatos: (rows ?? []).map((row) => ({ ...row, tipo: "staging", precio_confirmado: false, disponibilidad_confirmada: false })), offset: from, limit: 50, hay_mas: (rows ?? []).length === 50 });
+  }
+
   const declaredName = req.headers.get("x-file-name") ?? "catalogo.csv";
   let fileName = "catalogo.csv";
   try { fileName = decodeURIComponent(declaredName).replace(/[\\/\r\n]/g, "_").slice(0, 180); } catch { return reply({ error: "Nombre de archivo invÃƒÆ’Ã‚Â¡lido" }, 400); }
