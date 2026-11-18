@@ -1,4 +1,5 @@
 import { withSupabase } from "npm:@supabase/server@1";
+import { parseAndAnalyzeDocument } from "./parser.ts";
 
 const bucket = "compra-agil-documentos";
 const maxBytes = 25 * 1024 * 1024;
@@ -124,6 +125,59 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
         updated_at: entry.updated_at,
       })),
     });
+  }
+  if (input.accion === "analizar") {
+    const key = typeof input.key === "string" ? input.key : "";
+    const prefix = `${code}/`;
+    const filename = key.startsWith(prefix) ? key.slice(prefix.length) : "";
+    if (!filename || filename.includes("/") || filename.includes("..")) {
+      return reply({ error: "Documento inv\u00e1lido para esta oportunidad" }, 400);
+    }
+    const extension = filename.split(".").pop()?.toLowerCase();
+    if (extension !== "docx" && extension !== "pdf") {
+      return reply({ error: "Por ahora solo se analizan documentos DOCX y PDF con texto" }, 415);
+    }
+    const stored = await store.download(key);
+    if (stored.error || !stored.data) {
+      return reply({ error: "No se pudo recuperar el documento privado" }, 404);
+    }
+    if (stored.data.size > maxBytes) {
+      return reply({ error: "El documento supera el l\u00edmite permitido" }, 413);
+    }
+    const apiResult = await db.from("compra_agil_detalles")
+      .select("datos_detalle, fecha_consulta, fecha_actualizacion")
+      .eq("codigo", code).maybeSingle();
+    if (apiResult.error) {
+      return reply({ error: "No se pudo cargar el detalle oficial para contrastar el documento" }, 500);
+    }
+    const mime = extension === "docx"
+      ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      : "application/pdf";
+    try {
+      const analysis = await parseAndAnalyzeDocument(
+        new Uint8Array(await stored.data.arrayBuffer()),
+        mime,
+        isRecord(apiResult.data?.datos_detalle) ? apiResult.data.datos_detalle : null,
+      );
+      const analysisWithCode = {
+        ...analysis,
+        identification: { ...analysis.identification, codigo_oportunidad: code },
+      };
+      return reply({
+        documento: {
+          nombre: filename.replace(/^[0-9a-f-]{36}-/i, ""),
+          fecha_consulta_api: apiResult.data?.fecha_consulta ?? null,
+          fecha_actualizacion_api: apiResult.data?.fecha_actualizacion ?? null,
+        },
+        analysis: analysisWithCode,
+      });
+    } catch (error) {
+      return reply({
+        error: error instanceof Error
+          ? error.message
+          : "No se pudo extraer texto del documento",
+      }, 422);
+    }
   }
   if (input.accion === "descargar") {
     const key = typeof input.key === "string" ? input.key : "";
