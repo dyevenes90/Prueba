@@ -160,3 +160,14 @@ Security Advisor, consultado tras la revocación: desaparecieron las dos adverte
 - Con `apikey` pública, sin `Authorization`, cuerpo JSON `{}`, `compra-agil-sync` devolvió **HTTP 500** a las `2026-11-20T19:45:54.845Z` (UTC). Logs en `function_edge_logs`: `response.headers.sb_error_code=EDGE_FUNCTION_ERROR`, no respuesta 401/403 como esperado. No se observó entrega de datos; esto es un error de robustez/autenticación que requiere diagnóstico.
 - `function_logs` en la ventana muestra inicio de worker sin mensaje detallado de excepción. Pendiente revisar cuerpo de respuesta y traza sin compartir credenciales.
 - **No modificar `verify_jwt` ni secretos sin comprobar efecto sobre `auth:['user','secret:cron']`; no desplegar cambios a ciegas.**
+
+
+## 10. Causa identificada de HTTP 500 sin sesión (20-11-2026)
+
+El usuario reprodujo solicitud POST a `compra-agil-sync` con `apikey` pública, sin JWT ni acción (cuerpo `{}`). Supabase respondió 500 y `sb-error-code: EDGE_FUNCTION_ERROR`. El cuerpo contenía el error exacto `NO_KEYS_CONFIGURED` de `@supabase/server`: el modo `secret:cron` requerido por la función no tiene ninguna clave con nombre `cron` configurada. La respuesta enumera únicamente el nombre `secret:default`, **no el valor de la clave**.
+
+Se verificó que en la función desplegada v11 continúa `auth: ["user", "secret:cron"]`; la tabla `cron.job` no existe en la base actual (no se identificó una programación pg_cron en ese esquema).
+
+**Plan mínimo recomendado:** en **Supabase Project Settings → API Keys → Secret keys**, crear una clave privada **con nombre `cron`** (no una nueva variable arbitraria de Edge Function Secrets), sin copiarla en frontend, repositorio ni conversación. Solo un futuro proceso confiable de Cron debería recibir su valor por canal seguro. Mantener `verify_jwt=false` y validación dual. Esperar a que la configuración quede disponible en las funciones y repetir solicitud negativa con la clave pública sin JWT; debería rechazarse con 401/403, no 500. No enviar acciones de sincronización ni usar la clave secreta para esta prueba.
+
+**No se hicieron cambios en infraestructura desde esta auditoría; pendiente configuración en panel por el propietario.**
