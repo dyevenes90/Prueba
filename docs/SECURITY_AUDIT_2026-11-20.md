@@ -113,3 +113,33 @@ Revisar vistas que omiten `security_invoker=true` y funciones `SECURITY DEFINER`
 ## 6. No perder funcionalidad
 
 Nada de esto implica cambiar módulos, destruir tablas, desactivar APIs o hacer push a `main`. Revisar cambios en la PR de seguridad separada. El objetivo es que Trovofarma siga funcionando para Ximena y avanzar a rentabilidad/cotizaciones, manteniendo aprobación humana antes de publicar una oferta.
+
+
+## 7. Verificación conectada del proyecto (20-11-2026)
+
+Se confirmó por acceso de solo lectura a Supabase que el proyecto CRESCE está activo (`ACTIVE_HEALTHY`). Edge Functions desplegadas:
+- `compra-agil-sync`: ACTIVE, versión 11, `verify_jwt=false` (modalidades `user` y `secret:cron` en código desplegado).
+- `cresce-dashboard`: ACTIVE, versión 6, `verify_jwt=true`.
+- `compra-agil-detalle`: ACTIVE, versión 5, `verify_jwt=true`.
+- `compra-agil-seguimiento`: ACTIVE, versión 4, `verify_jwt=true`.
+- `compra-agil-documentos`: ACTIVE, versión 3, `verify_jwt=true`.
+- `trovo-catalogos-revision`: ACTIVE, versión 4, `verify_jwt=true`.
+
+**Security Advisor (producción):**
+- 15 hallazgos INFO: RLS activado sin políticas sobre las 15 tablas de `public`. Coherente con acceso por Edge Functions privilegiadas y sin permisos directos de lectura a `anon`/`authenticated`; no agregar políticas permisivas solo para suprimir el aviso.
+- WARN: `public.rls_auto_enable()`, función `SECURITY DEFINER`, es ejecutable por `anon` y `authenticated`. Existe el event trigger `ensure_rls` activo (`ddl_command_end`), que utiliza esa función para habilitar RLS al crear tablas. **Revisar y revocar permisos EXECUTE de roles no privilegiados sin borrar función ni trigger.** La exposición de EXECUTE es confirmada; esto no demuestra explotación ni que pueda ejecutarse como RPC normal, dado su tipo `event_trigger`.
+- WARN: protección contra contraseñas filtradas desactivada en Auth. Activar en panel si el plan lo permite y verificar funcionamiento de inicio y recuperación de sesión.
+
+**No se realizó cambio de permisos ni despliegue en producción.** Tras revisar impacto, sentencia propuesta:
+```sql
+REVOKE EXECUTE ON FUNCTION public.rls_auto_enable()
+FROM PUBLIC, anon, authenticated;
+```
+Validación posterior, solo lectura:
+```sql
+SELECT has_function_privilege('anon','public.rls_auto_enable()','EXECUTE') AS anon_execute,
+       has_function_privilege('authenticated','public.rls_auto_enable()','EXECUTE') AS authenticated_execute;
+```
+Deben ser `false`. Verificar además que `ensure_rls` siga `evtenabled='O'`.
+
+**Referencia del Advisor:** https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable
