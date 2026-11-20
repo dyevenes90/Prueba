@@ -185,3 +185,12 @@ El propietario creó una clave privada con nombre `cron` en **Secret keys** de S
 Capturas remitidas por el propietario tras iniciar sesión en la Preview de CRESCE y pulsar `Actualizar pantalla`: se muestran sin error los filtros, panel `Oportunidades para revisar`, tablas y métricas. Valores mostrados por la interfaz: **1.036** oportunidades almacenadas, **125** páginas pendientes, **3** abiertas confirmadas, **998** vencidas, **35** con fecha no verificable, **11** regiones con datos. Última ejecución parcial el 20-11-2026 a las 11:48 (Chile) y última sincronización completa registrada el 05-11-2026 a las 09:13. Esto **acredita la lectura de datos con sesión autorizada**, pero no demuestra exhaustividad de Mercado Público ni el estado de seguridad de Vercel.
 
 Intento de inspección del despliegue Vercel por repositorio desde el conector: devolvió que no encuentra proyecto vinculado accesible en esa conexión, a pesar de que el usuario abre la Preview; **no se inspeccionaron** las configuraciones de Deployment Protection, Environment Variables o Response Headers. Se requieren capturas directas de Vercel o un acceso conector adecuado. Ninguna PR de seguridad fue fusionada ni publicada en producción.
+
+
+## 13. Verificación visual de cabeceras HTTP de Preview (20-11-2026)
+
+El propietario comprobó desde Chrome DevTools > Network, con caché del navegador desactivada, el despliegue Preview de la rama `security/baseline-headers-gitignore-20261120` (commit `8da7493` o posterior). La captura de `app.js` confirma HTTP 200 y las cabeceras `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'`, junto con `Strict-Transport-Security`. Una segunda captura del documento principal HTML (`Content-Type: text/html`) muestra las mismas cuatro cabeceras y HSTS.
+
+**Conclusión:** las cuatro cabeceras iniciales están presentes en las respuestas HTML y JavaScript del Preview. Anteriores capturas con respuestas HTTP 304 no eran concluyentes. Esto valida únicamente el despliegue de Preview, **no** la protección contra XSS basada en `script-src`, ni los encabezados de producción, ni una auditoría integral del código.
+
+Comparación GitHub frente a `desarrollo-comercial`: solo tres archivos agregados (`.gitignore`, `vercel.json`, este informe), sin edición de los archivos operativos. La PR sigue pendiente de fusión y publicación, sujeta a aprobación y pruebas del usuario.
