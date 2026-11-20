@@ -152,3 +152,11 @@ El usuario ejecutó en producción `REVOKE EXECUTE ON FUNCTION public.rls_auto_e
 Security Advisor, consultado tras la revocación: desaparecieron las dos advertencias sobre ejecución pública de `SECURITY DEFINER`. Persisten solo (a) 15 hallazgos informativos sobre RLS activado sin políticas, coherentes con el diseño restringido, y (b) un WARN: `auth_leaked_password_protection` desactivado. Según la documentación oficial actual de Supabase, la protección contra contraseñas filtradas está disponible en el plan Pro o superior; no asumir que un proyecto Free puede activarla.
 
 **Próxima comprobación:** configuración de seguridad de Supabase Auth, aprobación/registro de usuarios, opciones de contraseñas, y pruebas no destructivas para rechazar solicitudes no autenticadas a las Edge Functions.
+
+
+## 9. Prueba negativa autenticación Edge Function (20-11-2026)
+
+- Sin cabecera apikey y sin sesión: las seis funciones devolvieron HTTP 401. **Esto puede corresponder a rechazo del gateway por ausencia de apikey; por sí solo no acredita validación interna.**
+- Con `apikey` pública, sin `Authorization`, cuerpo JSON `{}`, `compra-agil-sync` devolvió **HTTP 500** a las `2026-11-20T19:45:54.845Z` (UTC). Logs en `function_edge_logs`: `response.headers.sb_error_code=EDGE_FUNCTION_ERROR`, no respuesta 401/403 como esperado. No se observó entrega de datos; esto es un error de robustez/autenticación que requiere diagnóstico.
+- `function_logs` en la ventana muestra inicio de worker sin mensaje detallado de excepción. Pendiente revisar cuerpo de respuesta y traza sin compartir credenciales.
+- **No modificar `verify_jwt` ni secretos sin comprobar efecto sobre `auth:['user','secret:cron']`; no desplegar cambios a ciegas.**
