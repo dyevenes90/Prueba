@@ -143,3 +143,12 @@ SELECT has_function_privilege('anon','public.rls_auto_enable()','EXECUTE') AS an
 Deben ser `false`. Verificar además que `ensure_rls` siga `evtenabled='O'`.
 
 **Referencia del Advisor:** https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable
+
+
+## 8. Corrección confirmada en Supabase (20-11-2026)
+
+El usuario ejecutó en producción `REVOKE EXECUTE ON FUNCTION public.rls_auto_enable() FROM PUBLIC, anon, authenticated;`. Se verificó con `has_function_privilege(...,'EXECUTE')` que tanto `anon` como `authenticated` devuelven `false`. Consulta posterior a `pg_event_trigger`: el evento `ensure_rls` sigue presente y habilitado (`evtenabled='O'`), asociado a `rls_auto_enable()`. **No se ha probado crear tablas nuevas**, para evitar cambios adicionales en producción.
+
+Security Advisor, consultado tras la revocación: desaparecieron las dos advertencias sobre ejecución pública de `SECURITY DEFINER`. Persisten solo (a) 15 hallazgos informativos sobre RLS activado sin políticas, coherentes con el diseño restringido, y (b) un WARN: `auth_leaked_password_protection` desactivado. Según la documentación oficial actual de Supabase, la protección contra contraseñas filtradas está disponible en el plan Pro o superior; no asumir que un proyecto Free puede activarla.
+
+**Próxima comprobación:** configuración de seguridad de Supabase Auth, aprobación/registro de usuarios, opciones de contraseñas, y pruebas no destructivas para rechazar solicitudes no autenticadas a las Edge Functions.
