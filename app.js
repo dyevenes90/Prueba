@@ -38,6 +38,17 @@ let caAuthMode = 'login';
 let caSyncFromEdited=false;
 let caSyncFromValue='';
 let caAnalysisQuoteContext=null;
+let caRadarRequestSequence=0;
+let caRadarPending=null;
+let caRadarRowsSignature='';
+let caRadarReturnState=null;
+let caDetailRequestSequence=0;
+let caDetailCache=new Map();
+let caDetailCurrentCode=null;
+let caPrivateLoadPromise=null;
+let caPrivateLoadedUserId=null;
+let caAuthUserId=null;
+let caAuthRevision=0;
 
 function caAuthError(error){
  const message=String(error?.message||'').toLowerCase(),status=error?.status||error?.context?.status;
@@ -118,14 +129,49 @@ function caRenderNewPassword(message=''){
 function caRenderMetric(container,label,value,note){const card=caNode('article',undefined,'metric ca-metric');card.append(caNode('span',label),caNode('strong',value),caNode('small',note));container.append(card);}
 function caSyncStatusLabel(status){return ({completada:'Completada',parcial_por_limite:'Parcial por límite de páginas',completada_con_errores:'Parcial o con errores (histórico)',error:'Error real',cuota_agotada:'Cuota agotada',iniciada:'En progreso',otra_sincronizacion_en_curso:'En progreso',pendiente_por_limite:'Pendiente por límite',requiere_fecha_inicial:'Requiere fecha inicial'})[status]||caDisplay(status);}
 
-async function caLoadPrivate(){
+async function caLoadPrivate({force=false}={}){
  const client=dashboardConfig();if(!client){caRenderLogin('Configuración incompleta: agrega URL y clave sb_publishable_ en supabase-config.js.');return;}
  let session;try{session=await caPrivateSession(client);}catch{return;}
- const auth=document.getElementById('ca-auth'),content=document.getElementById('ca-data');auth.hidden=true;content.hidden=false;caSetStatus('Cargando datos privados…','loading');
- try{
-  const summary=await caInvoke({consulta:'resumen'});cresceDashboardState.summary=summary;caRenderSummary(summary);
-  await caLoadOpportunities();
- }catch(err){caSetStatus(err.message,'error');if(/Sesión expirada|No autorizado/.test(err.message)){await client.auth.signOut();caRenderLogin(err.message);}}
+ if(!session?.user?.id){caPrivateLoadedUserId=null;caRenderLogin('Inicia sesión para ver los datos privados.');return;}
+ const userId=session.user.id;
+ if(caPrivateLoadPromise?.userId===userId)return caPrivateLoadPromise.promise;
+ if(!force&&caPrivateLoadedUserId===userId)return;
+ if(caAuthUserId&&caAuthUserId!==userId)caClearPrivateView();
+ caAuthUserId=userId;
+ const revision=caAuthRevision;
+ const auth=document.getElementById('ca-auth'),content=document.getElementById('ca-data');
+ auth.hidden=true;content.hidden=false;
+ const promise=(async()=>{
+  try{
+   const summary=await caInvoke({consulta:'resumen'});
+   if(revision!==caAuthRevision||caAuthUserId!==userId)return;
+   cresceDashboardState.summary=summary;caRenderSummary(summary);
+   await caLoadOpportunities();
+   if(revision===caAuthRevision&&caAuthUserId===userId)caPrivateLoadedUserId=userId;
+  }catch(err){if(revision!==caAuthRevision||caAuthUserId!==userId)return;caSetStatus(err.message,'error');if(/Sesión expirada|No autorizado/.test(err.message)){await client.auth.signOut();caRenderLogin(err.message);}}
+ })();
+ caPrivateLoadPromise={userId,promise};
+ try{return await promise;}finally{if(caPrivateLoadPromise?.promise===promise)caPrivateLoadPromise=null;}
+}
+function caClearPrivateView(){
+ caAuthRevision++;caPrivateLoadedUserId=null;caPrivateLoadPromise=null;
+ caRadarRequestSequence++;caRadarPending=null;caRadarRowsSignature='';
+ caDetailRequestSequence++;caDetailCache.clear();caRadarReturnState=null;
+ cresceDashboardState.selected=null;caDetailCurrentCode=null;
+ const tbody=document.getElementById('ca-opportunity-rows');tbody?.replaceChildren();
+ const detail=document.getElementById('ca-detail-panel');if(detail){detail.replaceChildren();detail.hidden=true;}
+ const overview=document.getElementById('ca-dashboard-overview');if(overview)overview.hidden=false;
+}
+function caHandleAuthStateChange(event,session){
+ if(!location.hash.includes('trovofarma/compra-agil'))return;
+ if(event==='PASSWORD_RECOVERY'){caRenderNewPassword();return;}
+ if(event==='TOKEN_REFRESHED')return;
+ if(event==='SIGNED_OUT'){caAuthUserId=null;caClearPrivateView();if(caAuthMode!=='recovery')caRenderLogin();return;}
+ if(!session?.user?.id||!['INITIAL_SESSION','SIGNED_IN'].includes(event))return;
+ const userId=session.user.id;
+ if(caAuthUserId!==userId){caClearPrivateView();caAuthUserId=userId;}
+ const label=document.getElementById('ca-account-label');if(label)label.textContent='Sesión activa';
+ if(caPrivateLoadedUserId!==userId)void caLoadPrivate();
 }
 
 function caRenderSummary(summary){
@@ -153,46 +199,160 @@ function caRenderSummary(summary){
 }
 
 function caFilters(){return {texto:document.getElementById('ca-search').value.trim(),region:document.getElementById('ca-region').value,desde:document.getElementById('ca-date-from').value,hasta:document.getElementById('ca-date-to').value,monto_minimo:document.getElementById('ca-min-amount').value,monto_maximo:document.getElementById('ca-max-amount').value,solo_vigentes:document.getElementById('ca-only-current').checked,orden:document.getElementById('ca-sort').value,direccion:document.getElementById('ca-direction').value,pagina:cresceDashboardState.page};}
-async function caLoadOpportunities(){
- const tbody=document.getElementById('ca-opportunity-rows');if(!tbody)return;tbody.replaceChildren();const loading=caNode('tr');const loadingCell=caNode('td','Consultando oportunidades…','ca-loading-row');loadingCell.colSpan=8;loading.append(loadingCell);tbody.append(loading);caSetStatus('Consultando oportunidades…','loading');
- try{
-  const trackingFilter=document.getElementById('ca-tracking-filter').value;let result;let trackingUnavailable=false;
-  if(trackingFilter)result=await caInvokeSeguimiento({accion:'radar',filtros:caFilters(),filtro_cobertura:trackingFilter});
-  else{result=await caInvoke({consulta:'oportunidades',...caFilters()});try{const coverage=await caInvokeSeguimiento({accion:'resumen_lote',codigos:(result.items||[]).map(row=>row.codigo)});cresceDashboardState.coverage=coverage.resumen||{};result.items=(result.items||[]).map(row=>({...row,...(coverage.resumen||{})[row.codigo]}));}catch{trackingUnavailable=true;result.items=(result.items||[]).map(row=>({...row,seguimiento_no_disponible:true}));}}
-  tbody.replaceChildren();
-  if(!result.items?.length){const row=caNode('tr');const cell=caNode('td','No hay resultados para estos filtros.','ca-empty');cell.colSpan=8;row.append(cell);tbody.append(row);}
-  else for(const item of result.items){
-   const tr=document.createElement('tr');const close=caSantiagoDate(item.fecha_cierre);const confirmed=item.vigencia==='abierta_confirmada'&&close.verified&&Date.parse(item.fecha_cierre)>Date.now();const status=item.vigencia==='vencida'||(close.verified&&Date.parse(item.fecha_cierre)<=Date.now())?'Vencida':confirmed?'Abierta confirmada':'Vigencia pendiente de confirmaci\u00f3n';const values=[[item.organismo,'Instituci\u00f3n'],[item.nombre,'Compra'],[item.codigo,'C\u00f3digo'],[item.region,'Regi\u00f3n'],[caMoney(item.monto_estimado),'Monto estimado'],[close.text,'Cierre'],[status,'Vigencia']];
-   for(const [value,label] of values){const cell=caNode('td',caDisplay(value));cell.dataset.label=label;if(label==='C\u00f3digo'){const link=document.createElement('a');link.href='https://buscador.mercadopublico.cl/compra-agil';link.target='_blank';link.rel='noopener noreferrer';link.className='ca-official-process-link';link.textContent='Abrir en Mercado P\u00fablico';const copy=caNode('button','Copiar c\u00f3digo','ca-small-button');copy.type='button';copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(String(item.codigo));copy.textContent='C\u00f3digo copiado';}catch{copy.textContent='C\u00f3digo: '+item.codigo;}});cell.append(document.createTextNode(caDisplay(value)+' '),link,copy);}tr.append(cell);}
-   const action=caNode('td',undefined,'ca-row-actions');action.dataset.label='Acción';const coverageLabel=item.seguimiento_no_disponible?'Seguimiento no disponible':!item.tiene_detalle?'Falta consultar detalle':item.clasificacion_cobertura==='SIN_EVALUAR'?'Sin evaluar':`Cobertura ${item.clasificacion_cobertura==='COBERTURA_COMPLETA'?'completa':'parcial'} · ${item.productos_confirmados||0}/${item.productos_total||0}${item.productos_posibles?` · ${item.productos_posibles} posibles`:''}`;action.append(caNode('small',coverageLabel,'ca-coverage-label'));const view=caNode('button','Ver oportunidad','ca-small-button');view.type='button';view.addEventListener('click',()=>caOpenDetail(item));action.append(view);tr.append(action);tbody.append(tr);
+function caRadarLoading(message='',kind='loading'){
+ const indicator=document.getElementById('ca-radar-loading');if(!indicator)return;
+ indicator.hidden=!message;indicator.dataset.kind=kind;indicator.textContent=message;
+}
+function caOpportunityRowSignature(items){
+ return JSON.stringify((items||[]).map(item=>[item.codigo,item.organismo,item.nombre,item.region,item.monto_estimado,item.fecha_cierre,item.vigencia,item.clasificacion_cobertura,item.productos_confirmados,item.productos_posibles,item.productos_total,item.tiene_detalle,item.seguimiento_no_disponible]));
+}
+function caRadarOpportunityMarkup(item){
+ const tr=document.createElement('tr');
+ const close=caSantiagoDate(item.fecha_cierre);
+ const confirmed=item.vigencia==='abierta_confirmada'&&close.verified&&Date.parse(item.fecha_cierre)>Date.now();
+ const status=item.vigencia==='vencida'||(close.verified&&Date.parse(item.fecha_cierre)<=Date.now())?'Vencida':confirmed?'Abierta confirmada':'Vigencia pendiente de confirmación';
+ const values=[[item.organismo,'Institución'],[item.nombre,'Compra'],[item.codigo,'Código'],[item.region,'Región'],[caMoney(item.monto_estimado),'Monto estimado'],[close.text,'Cierre'],[status,'Vigencia']];
+ for(const [value,label] of values){
+  const cell=caNode('td',caDisplay(value));cell.dataset.label=label;
+  if(label==='Código'){
+   const link=document.createElement('a');link.href='https://buscador.mercadopublico.cl/compra-agil';link.target='_blank';link.rel='noopener noreferrer';link.className='ca-official-process-link';link.textContent='Abrir en Mercado Público';
+   const copy=caNode('button','Copiar código','ca-small-button');copy.type='button';copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(String(item.codigo));copy.textContent='Código copiado';}catch{copy.textContent='Código: '+item.codigo;}});
+   cell.append(document.createTextNode(caDisplay(value)+' '),link,copy);
   }
-  const total=result.total||0;document.getElementById('ca-page-label').textContent=`Página ${result.pagina} · ${total} resultados filtrados${result.parcial?' · conjunto parcial (límite de seguridad de 10.000)':''}`;
-  document.getElementById('ca-prev').disabled=result.pagina<=1;document.getElementById('ca-next').disabled=result.pagina*result.por_pagina>=total;
-  caSetStatus(trackingUnavailable?'Seguimiento aún no disponible; el Radar sigue operativo.':result.parcial?'Se alcanzó el límite de lectura; el conteo es parcial.':'',trackingUnavailable||result.parcial?'warning':'');
- }catch(error){tbody.replaceChildren();const row=caNode('tr');const cell=caNode('td','No se pudieron cargar las oportunidades. Reintenta la consulta.','ca-inline-error');cell.colSpan=8;row.append(cell);tbody.append(row);caSetStatus('No se pudo consultar el Radar.','error');throw error;}
+  tr.append(cell);
+ }
+ const action=caNode('td',undefined,'ca-row-actions');action.dataset.label='Acción';action.dataset.codigo=item.codigo;
+ const coverageLabel=item.seguimiento_no_disponible?'Seguimiento no disponible':!item.tiene_detalle?'Falta consultar detalle':item.clasificacion_cobertura==='SIN_EVALUAR'?'Sin evaluar':`Cobertura ${item.clasificacion_cobertura==='COBERTURA_COMPLETA'?'completa':'parcial'} · ${item.productos_confirmados||0}/${item.productos_total||0}${item.productos_posibles?` · ${item.productos_posibles} posibles`:''}`;
+ action.append(caNode('small',coverageLabel,'ca-coverage-label'));
+ const view=caNode('button','Ver oportunidad','ca-small-button');view.type='button';view.addEventListener('click',event=>caOpenDetail(item,event.currentTarget));action.append(view);tr.append(action);
+ return tr;
 }
-async function caOpenDetail(opportunity){
- cresceDashboardState.selected=opportunity;const panel=document.getElementById('ca-detail-panel');panel.hidden=false;panel.replaceChildren(caNode('p','Cargando detalle…','ca-muted'));panel.scrollIntoView({behavior:'smooth',block:'start'});
- try{const response=await caInvoke({consulta:'detalle',codigo:opportunity.codigo});if(!response.detalle){panel.replaceChildren(caNode('h3','Detalle de la oportunidad'),caNode('p',response.mensaje||'Detalle oficial pendiente: todavía no está almacenado.','ca-empty'));const consult=caNode('button','Consultar detalle oficial','ca-primary');consult.type='button';consult.addEventListener('click',async()=>{consult.disabled=true;consult.textContent='Consultando…';try{await caInvokeDetalle({accion:'consultar',codigo:opportunity.codigo});await caOpenDetail(opportunity);}catch(error){caAppendOfficialSearch(panel,opportunity.codigo,true,error.message);consult.disabled=false;consult.textContent='Reintentar consulta oficial';}});panel.append(consult,caNode('p','La consulta se realiza en el servidor con el ticket privado.','ca-muted'));caDetailActions(panel,opportunity);return;}const detail=response.detalle.datos_detalle||{};caRenderDetail(panel,opportunity,detail);const checkedAt=response.detalle.fecha_consulta||response.detalle.fecha_actualizacion;if(checkedAt){const stamp=caNode("p",`Detalle oficial consultado: ${caSantiagoDate(checkedAt).text}`,"ca-muted");const nav=panel.querySelector(".ca-detail-nav");panel.insertBefore(stamp,nav||panel.firstChild);}await caRenderPrivateDocuments(panel,opportunity);await caRenderTracking(panel,opportunity,detail);await caRenderEconomic(panel,opportunity,detail);await caRenderRequirements(panel,opportunity,detail);}
- catch(error){panel.replaceChildren(caNode('h3','Detalle de la oportunidad'));caAppendOfficialSearch(panel,opportunity.codigo,false,error.message);caDetailActions(panel,opportunity);}
+async function caLoadOpportunities(){
+ const tbody=document.getElementById('ca-opportunity-rows');if(!tbody)return;
+ const filters=caFilters(),trackingFilter=document.getElementById('ca-tracking-filter').value;
+ const requestKey=JSON.stringify({filters,trackingFilter});
+ if(caRadarPending?.key===requestKey)return caRadarPending.promise;
+ const requestId=++caRadarRequestSequence;
+ caRadarLoading('Actualizando oportunidades…','loading');
+ if(!tbody.children.length){const row=caNode('tr');const cell=caNode('td','Cargando oportunidades…','ca-loading-row');cell.colSpan=8;row.append(cell);tbody.append(row);}
+ const promise=(async()=>{
+  try{
+   let result,trackingUnavailable=false;
+   if(trackingFilter)result=await caInvokeSeguimiento({accion:'radar',filtros, filtro_cobertura:trackingFilter});
+   else{
+    result=await caInvoke({consulta:'oportunidades',...filters});
+    if(requestId!==caRadarRequestSequence)return;
+    try{
+     const coverage=await caInvokeSeguimiento({accion:'resumen_lote',codigos:(result.items||[]).map(row=>row.codigo)});
+     if(requestId!==caRadarRequestSequence)return;
+     cresceDashboardState.coverage=coverage.resumen||{};
+     result.items=(result.items||[]).map(row=>({...row,...(coverage.resumen||{})[row.codigo]}));
+    }catch{if(requestId!==caRadarRequestSequence)return;trackingUnavailable=true;result.items=(result.items||[]).map(row=>({...row,seguimiento_no_disponible:true}));}
+   }
+   if(requestId!==caRadarRequestSequence)return;
+   const signature=caOpportunityRowSignature(result.items||[]);
+   if(signature!==caRadarRowsSignature){
+    const rows=!result.items?.length?[(()=>{const row=caNode('tr'),cell=caNode('td','No hay resultados para estos filtros.','ca-empty');cell.colSpan=8;row.append(cell);return row;})()]:result.items.map(caRadarOpportunityMarkup);
+    tbody.replaceChildren(...rows);caRadarRowsSignature=signature;
+   }
+   const total=result.total||0,page=result.pagina||filters.pagina,perPage=result.por_pagina||25;
+   document.getElementById('ca-page-label').textContent=`Página ${page} · ${total} resultados filtrados${result.parcial?' · conjunto parcial (límite de seguridad de 10.000)':''}`;
+   document.getElementById('ca-prev').disabled=page<=1;document.getElementById('ca-next').disabled=page*perPage>=total;
+   caRadarLoading(trackingUnavailable?'Seguimiento no disponible; se conserva el Radar.':result.parcial?'Lectura parcial: se alcanzó el límite seguro.':'',trackingUnavailable||result.parcial?'warning':'loading');
+  }catch(error){
+   if(requestId!==caRadarRequestSequence)return;
+   if(!caRadarRowsSignature){const row=caNode('tr'),cell=caNode('td','No se pudieron cargar las oportunidades. Reintenta la consulta.','ca-inline-error');cell.colSpan=8;row.append(cell);tbody.replaceChildren(row);}
+   caRadarLoading('No se pudo actualizar el Radar. Se conserva la lista anterior. '+(error.message||''),'error');
+   caSetStatus('No se pudo consultar el Radar.','error');throw error;
+  }finally{if(requestId===caRadarRequestSequence&&caRadarPending?.key===requestKey)caRadarPending=null;}
+ })();
+ caRadarPending={key:requestKey,promise};return promise;
 }
+
+function caEnterDetailView(opportunity,trigger){
+ if(!caRadarReturnState)caRadarReturnState={scrollY:window.scrollY,focus:trigger||document.activeElement};
+ const overview=document.getElementById('ca-dashboard-overview'),panel=document.getElementById('ca-detail-panel');
+ if(overview)overview.hidden=true;panel.hidden=false;cresceDashboardState.selected=opportunity;
+ const heading=document.querySelector('.workspace-heading');
+ if(heading){const y=Math.max(0,heading.getBoundingClientRect().top+window.scrollY-18);window.scrollTo({top:y,behavior:'instant'});}
+}
+function caCloseDetail(){
+ caDetailRequestSequence++;
+ const panel=document.getElementById('ca-detail-panel'),overview=document.getElementById('ca-dashboard-overview');
+ panel.hidden=true;if(overview)overview.hidden=false;
+ const state=caRadarReturnState;caRadarReturnState=null;cresceDashboardState.selected=null;
+ if(state){window.scrollTo({top:state.scrollY,behavior:'instant'});if(state.focus?.isConnected)state.focus.focus({preventScroll:true});}
+}
+async function caOpenDetail(opportunity,trigger=document.activeElement,{refresh=false}={}){
+ const panel=document.getElementById('ca-detail-panel');if(!panel)return;
+ const same=caDetailCurrentCode===opportunity.codigo;
+ if(!same)cresceDashboardState.detailTab='resumen';
+ caEnterDetailView(opportunity,trigger);
+ if(same&&!refresh&&panel.children.length){panel.querySelector('.ca-detail-back')?.focus({preventScroll:true});return;}
+ const requestId=++caDetailRequestSequence;
+ caDetailCurrentCode=opportunity.codigo;
+ panel.replaceChildren();
+ const loading=caNode('div',undefined,'ca-detail-loading');loading.setAttribute('role','status');loading.append(caNode('span','Cargando ficha de oportunidad…','ca-muted'));
+ const backLoading=caNode('button','← Volver al Radar','ca-secondary ca-detail-back');backLoading.type='button';backLoading.addEventListener('click',caCloseDetail);loading.prepend(backLoading);panel.append(loading);backLoading.focus({preventScroll:true});
+ const title=document.getElementById('ca-page-title');if(title)title.textContent='Cargando oportunidad';
+ try{
+  const response=await caInvoke({consulta:'detalle',codigo:opportunity.codigo});
+  if(requestId!==caDetailRequestSequence||!panel.isConnected)return;
+  if(!response.detalle){
+   panel.replaceChildren(caNode('h3','Detalle de la oportunidad'));
+   const back=caNode('button','← Volver al Radar','ca-secondary ca-detail-back');back.type='button';back.addEventListener('click',caCloseDetail);
+   panel.prepend(back,panel.lastChild);
+   panel.append(caNode('p',response.mensaje||'Detalle oficial pendiente: todavía no está almacenado.','ca-empty'));
+   const consult=caNode('button','Consultar detalle oficial','ca-primary');consult.type='button';
+   consult.addEventListener('click',async()=>{consult.disabled=true;consult.textContent='Consultando…';try{await caInvokeDetalle({accion:'consultar',codigo:opportunity.codigo});if(requestId!==caDetailRequestSequence)return;caDetailCache.delete(opportunity.codigo);await caOpenDetail(opportunity,trigger,{refresh:true});}catch(error){if(requestId!==caDetailRequestSequence)return;caAppendOfficialSearch(panel,opportunity.codigo,true,error.message);consult.disabled=false;consult.textContent='Reintentar consulta oficial';}});
+   panel.append(consult,caNode('p','La consulta se realiza en el servidor con el ticket privado.','ca-muted'));caDetailActions(panel,opportunity);
+   const h=panel.querySelector('h3');if(h){h.id='ca-detail-view-title';h.tabIndex=-1;h.focus({preventScroll:true});}
+   if(title)title.textContent='Detalle de oportunidad';return;
+  }
+  const detail=response.detalle.datos_detalle||{},checkedAt=response.detalle.fecha_consulta||response.detalle.fecha_actualizacion;
+  caDetailCache.set(opportunity.codigo,{detail,checkedAt});
+  caRenderDetail(panel,opportunity,detail);
+  if(checkedAt){const stamp=caNode('p',`Detalle oficial consultado: ${caSantiagoDate(checkedAt).text}`,'ca-muted');const nav=panel.querySelector('.ca-detail-nav');panel.insertBefore(stamp,nav||panel.firstChild);}
+  const h=panel.querySelector('#ca-detail-view-title');h?.focus({preventScroll:true});
+  if(title)title.textContent='Detalle de oportunidad';
+  await caRenderPrivateDocuments(panel,opportunity);if(requestId!==caDetailRequestSequence||!panel.isConnected)return;
+  await caRenderTracking(panel,opportunity,detail);if(requestId!==caDetailRequestSequence||!panel.isConnected)return;
+  await caRenderEconomic(panel,opportunity,detail);if(requestId!==caDetailRequestSequence||!panel.isConnected)return;
+  await caRenderRequirements(panel,opportunity,detail);
+ }catch(error){
+  if(requestId!==caDetailRequestSequence||!panel.isConnected)return;
+  panel.replaceChildren(caNode('h3','Detalle de la oportunidad'));const back=caNode('button','← Volver al Radar','ca-secondary ca-detail-back');back.type='button';back.addEventListener('click',caCloseDetail);panel.prepend(back);caAppendOfficialSearch(panel,opportunity.codigo,false,error.message);caDetailActions(panel,opportunity);
+  const h=panel.querySelector('h3');if(h){h.id='ca-detail-view-title';h.tabIndex=-1;h.focus({preventScroll:true});}
+  if(title)title.textContent='Detalle de oportunidad';
+ }
+}
+async function caRefreshCoverageRow(codigo){
+ try{
+  const data=await caInvokeSeguimiento({accion:'resumen_lote',codigos:[codigo]}),summary=data.resumen?.[codigo];
+  if(!summary)return;
+  const action=[...document.querySelectorAll('#ca-opportunity-rows .ca-row-actions')].find(node=>node.dataset.codigo===codigo);
+  if(!action)return;
+  const label=action.querySelector('.ca-coverage-label');if(label)label.textContent=summary.clasificacion==='SIN_EVALUAR'?'Sin evaluar':`Cobertura ${summary.clasificacion==='COBERTURA_COMPLETA'?'completa':'parcial'} · ${summary.productos_confirmados||0}/${summary.productos_total||0}${summary.productos_posibles?` · ${summary.productos_posibles} posibles`:''}`;
+ }catch{/* El estado guardado persiste aunque el indicador del Radar no pueda refrescarse. */}
+}
+
 function caAppendOfficialSearch(panel,code,pending=false,message=''){panel.querySelectorAll('.ca-detail-fetch-error,.ca-detail-pending,.ca-detail-manual-hint,.ca-official-process-link,.ca-official-code-copy').forEach(node=>node.remove());if(message){const error=caNode('p',message,'ca-inline-error');error.classList.add('ca-detail-fetch-error');panel.append(error);}if(pending)panel.append(caNode('p','Detalle oficial pendiente. La oportunidad permanece en el Radar y no se modificaron sus datos guardados.','ca-warning ca-detail-pending'));const hint=caNode('p',`Puedes buscar el proceso ${code} manualmente en Mercado Público.`,'ca-muted ca-detail-manual-hint');panel.append(hint);const link=document.createElement('a');link.href='https://buscador.mercadopublico.cl/compra-agil';link.target='_blank';link.rel='noopener noreferrer';link.className='ca-secondary ca-official-process-link';link.textContent='Abrir en Mercado P\u00fablico';const copy=caNode('button','Copiar c\u00f3digo','ca-secondary ca-official-code-copy');copy.type='button';copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(code);copy.textContent='C\u00f3digo copiado';}catch{copy.textContent='C\u00f3digo: '+code;}});panel.append(link,copy);}
 function caDetailActions(panel,opportunity){const actions=caNode('div',undefined,'ca-actions');for(const [label,kind] of [['Evaluar','evaluate'],['Preparar cotización','prepare']]){const button=caNode('button',label,'ca-secondary');button.type='button';button.addEventListener('click',()=>caSetManualAction(opportunity,kind));actions.append(button);}panel.append(actions);}
 function caRenderDetail(panel,opportunity,detail){
  panel.replaceChildren();
  const officialUrl='https://buscador.mercadopublico.cl/compra-agil';
  const top=caNode('div',undefined,'ca-detail-head');
- const heading=caNode('div');heading.append(caNode('span','DETALLE COMERCIAL','eyebrow'),caNode('h3',caDisplay(detail.nombre||opportunity.nombre)),caNode('p',caDisplay(opportunity.codigo)));
- const close=caNode('button','Cerrar','ca-close');close.type='button';close.addEventListener('click',()=>panel.hidden=true);top.append(heading,close);panel.append(top);
+ const back=caNode('button','← Volver al Radar','ca-secondary ca-detail-back');back.type='button';back.addEventListener('click',caCloseDetail);top.append(back);
+  const heading=caNode('div');heading.append(caNode('span','DETALLE COMERCIAL','eyebrow'),caNode('h3',caDisplay(detail.nombre||opportunity.nombre)),caNode('p',caDisplay(opportunity.codigo)));const title=heading.querySelector('h3');title.id='ca-detail-view-title';title.tabIndex=-1;top.append(heading);panel.append(top);
  const actions=caNode('div',undefined,'ca-actions');const official=document.createElement('a');official.href=officialUrl;official.target='_blank';official.rel='noopener noreferrer';official.className='ca-secondary';official.textContent='Abrir en Mercado P\u00fablico';
  const copy=caNode('button','Copiar c\u00f3digo','ca-secondary');copy.type='button';copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(String(opportunity.codigo));copy.textContent='C\u00f3digo copiado';}catch{copy.textContent='C\u00f3digo: '+opportunity.codigo;}});actions.append(official,copy);panel.append(actions);
  const names=[['resumen','Resumen'],['productos','Productos'],['proveedores','Proveedores'],['requisitos','Requisitos'],['documentos','Documentos'],['rentabilidad','Rentabilidad']];
  const nav=caNode('div',undefined,'ca-detail-nav');nav.setAttribute('role','tablist');nav.setAttribute('aria-label','Secciones de la ficha');
  const panes={};for(let i=0;i<names.length;i++){const key=names[i][0],label=names[i][1],id='ca-detail-'+key;
-  const button=caNode('button',label);button.type='button';button.setAttribute('role','tab');button.id=id+'-tab';button.setAttribute('aria-controls',id+'-pane');button.setAttribute('aria-selected',String(i===0));button.tabIndex=i===0?0:-1;button.dataset.caDetailTab=key;nav.append(button);
-  const section=caNode('section',undefined,'ca-detail-section');section.id=id+'-pane';section.setAttribute('role','tabpanel');section.setAttribute('aria-labelledby',id+'-tab');section.dataset.caDetailSection=key;section.hidden=i!==0;section.append(caNode('h4',label));panes[key]=section;
+   const button=caNode('button',label);button.type='button';button.setAttribute('role','tab');button.id=id+'-tab';button.setAttribute('aria-controls',id+'-pane');const selected=(cresceDashboardState.detailTab||'resumen')===key;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;button.dataset.caDetailTab=key;nav.append(button);
+   const section=caNode('section',undefined,'ca-detail-section');section.id=id+'-pane';section.setAttribute('role','tabpanel');section.setAttribute('aria-labelledby',id+'-tab');section.dataset.caDetailSection=key;section.hidden=!selected;section.append(caNode('h4',label));panes[key]=section;
  }
- nav.addEventListener('click',event=>{const button=event.target.closest('[data-ca-detail-tab]');if(!button)return;const key=button.dataset.caDetailTab;for(const tab of nav.querySelectorAll('[role=tab]')){const selected=tab===button;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;}for(const name of names)panes[name[0]].hidden=name[0]!==key;});
+ nav.addEventListener('click',event=>{const button=event.target.closest('[data-ca-detail-tab]');if(!button)return;const key=button.dataset.caDetailTab;cresceDashboardState.detailTab=key;for(const tab of nav.querySelectorAll('[role=tab]')){const selected=tab===button;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;}for(const name of names)panes[name[0]].hidden=name[0]!==key;});
  nav.addEventListener('keydown',event=>{const tabs=[...nav.querySelectorAll('[role=tab]')],index=tabs.indexOf(document.activeElement);let next=index;if(event.key==='ArrowRight')next=(index+1)%tabs.length;else if(event.key==='ArrowLeft')next=(index+tabs.length-1)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();tabs[next].focus();tabs[next].click();});
  const closeValue=detail.fechas?.fecha_cierre||opportunity.fecha_cierre,closeDate=caSantiagoDate(closeValue),past=closeDate.verified&&Date.parse(closeValue)<=Date.now();
  const products=Array.isArray(detail.productos_solicitados)?detail.productos_solicitados:[];
@@ -251,7 +411,7 @@ async function caRenderTracking(panel,opportunity,detail){
   const priceLabel=caNode('label','Precio de compra referencial (CLP)');const priceInput=document.createElement('input');priceInput.type='number';priceInput.min='0';priceInput.step='any';priceInput.placeholder='Pendiente de confirmacion';priceInput.value=saved.precio_compra_referencial??'';priceLabel.append(priceInput);form.append(priceLabel);
   const termsLabel=caNode('label','Condiciones de abastecimiento');const terms=document.createElement('textarea');terms.maxLength=3000;terms.value=(saved.condiciones_abastecimiento||'').replace(/^DISPONIBILIDAD (?:CONFIRMADA MANUALMENTE|PENDIENTE) - /,'');termsLabel.append(terms);form.append(termsLabel);
   const dateLabel=caNode('label','Fecha de confirmación');const date=document.createElement('input');date.type='date';date.value=saved.fecha_confirmacion||'';dateLabel.append(date);form.append(dateLabel);const availabilityLabel=caNode('label','Disponibilidad confirmada con evidencia');const availability=document.createElement('input');availability.type='checkbox';availability.checked=/DISPONIBILIDAD CONFIRMADA MANUALMENTE/.test(saved.condiciones_abastecimiento||'');availabilityLabel.prepend(availability);form.append(availabilityLabel);
-  const save=caNode('button','Guardar seguimiento','ca-secondary');save.type='button';save.addEventListener('click',async()=>{save.disabled=true;save.textContent='Guardando…';if(status.value==='PROVEEDOR_CONFIRMADO'&&(!availability.checked||!terms.value.trim()||!date.value)){caSetStatus('Para confirmar abastecimiento registra disponibilidad, evidencia/condiciones y fecha.','warning');save.disabled=false;save.textContent='Guardar seguimiento';return;}const availabilityEvidence=availability.checked?'DISPONIBILIDAD CONFIRMADA MANUALMENTE - ':'DISPONIBILIDAD PENDIENTE - ';try{const result=await caInvokeSeguimiento({accion:'guardar',codigo:opportunity.codigo,seguimiento:{producto_key:key,producto_nombre:nameInput.value,cantidad:qtyInput.value,unidad_medida:product.unidad_medida,especificacion:product.descripcion,estado:status.value,proveedor_id:provider.value,proveedor_nombre_manual:manual.value,observaciones:observation.value,precio_compra_referencial:priceInput.value===''?null:Number(priceInput.value),condiciones_abastecimiento:availabilityEvidence+terms.value,fecha_confirmacion:date.value}});const idx=records.findIndex(row=>row.producto_key===key);if(idx>=0)records[idx]=result.seguimiento;else records.push(result.seguimiento);caSetStatus('Seguimiento guardado.','success');await caOpenDetail(opportunity);await caLoadOpportunities();}catch(error){caSetStatus(error.message,'error');}finally{save.disabled=false;save.textContent='Guardar seguimiento';}});const search=caNode('button','Buscar proveedor','ca-secondary');search.type='button';search.addEventListener('click',()=>{status.value='BUSCAR_PROVEEDOR';provider.focus();});form.append(search,save);card.append(form);return card;});
+  const save=caNode('button','Guardar seguimiento','ca-secondary');save.type='button';save.addEventListener('click',async()=>{save.disabled=true;save.textContent='Guardando…';if(status.value==='PROVEEDOR_CONFIRMADO'&&(!availability.checked||!terms.value.trim()||!date.value)){caSetStatus('Para confirmar abastecimiento registra disponibilidad, evidencia/condiciones y fecha.','warning');save.disabled=false;save.textContent='Guardar seguimiento';return;}const availabilityEvidence=availability.checked?'DISPONIBILIDAD CONFIRMADA MANUALMENTE - ':'DISPONIBILIDAD PENDIENTE - ';try{const result=await caInvokeSeguimiento({accion:'guardar',codigo:opportunity.codigo,seguimiento:{producto_key:key,producto_nombre:nameInput.value,cantidad:qtyInput.value,unidad_medida:product.unidad_medida,especificacion:product.descripcion,estado:status.value,proveedor_id:provider.value,proveedor_nombre_manual:manual.value,observaciones:observation.value,precio_compra_referencial:priceInput.value===''?null:Number(priceInput.value),condiciones_abastecimiento:availabilityEvidence+terms.value,fecha_confirmacion:date.value}});const idx=records.findIndex(row=>row.producto_key===key);if(idx>=0)records[idx]=result.seguimiento;else records.push(result.seguimiento);caSetStatus('Seguimiento guardado.','success');await caRefreshCoverageRow(opportunity.codigo);}catch(error){caSetStatus(error.message,'error');}finally{save.disabled=false;save.textContent='Guardar seguimiento';}});const search=caNode('button','Buscar proveedor','ca-secondary');search.type='button';search.addEventListener('click',()=>{status.value='BUSCAR_PROVEEDOR';provider.focus();});form.append(search,save);card.append(form);return card;});
  const summary=caNode('section',undefined,'ca-coverage-summary');const total=lines.length;const detailAvailable=Boolean(detail&&typeof detail==='object'&&Object.keys(detail).length);const coverageText=!detailAvailable?'Detalle pendiente':total?`Cobertura confirmada: ${confirmed}/${total} líneas · ${Math.round(confirmed*100/total)}%`:'Sin evaluar · No hay líneas de productos informadas';summary.append(caNode('strong',coverageText),caNode('span',`Posibles coincidencias: ${possible} · No equivalen a abastecimiento confirmado.`));const classification=!detailAvailable?'DETALLE_PENDIENTE':total===0||lines.every(({key})=>(byKey.get(key)?.estado||'SIN_EVALUAR')==='SIN_EVALUAR')?'SIN_EVALUAR':confirmed===total?'COBERTURA_COMPLETA':'COBERTURA_PARCIAL';summary.append(caNode('b',classification==='COBERTURA_COMPLETA'?'Cobertura completa':classification==='COBERTURA_PARCIAL'?'Cobertura parcial':classification==='DETALLE_PENDIENTE'?'Detalle pendiente':'Sin evaluar'));target.append(caNode('h4','Seguimiento manual de productos'),summary);
   const executiveCoverage=panel.querySelector('.ca-executive-coverage');if(executiveCoverage)executiveCoverage.textContent=detailAvailable?`Cobertura confirmada: ${confirmed}/${total} · ${possible} posibles`:'Detalle pendiente';const summaryCoverage=panel.querySelector('.ca-detail-summary-card:nth-child(5) strong');if(summaryCoverage)summaryCoverage.textContent=confirmed+'/'+total+' confirmados';
   if(!lines.length)target.append(caNode('p','El detalle no contiene líneas de productos para evaluar. Esto no significa que la oportunidad sea imposible de abastecer.','ca-empty'));else{const list=caNode('div',undefined,'ca-tracking-list');sections.forEach(card=>list.append(card));target.append(list);}
@@ -370,17 +530,17 @@ function caPrivateImportSetup(){const picker=document.getElementById('ca-import-
    const lines=rows.map(row=>{const count=Number(row.paginas_consultadas)||0;const name=row.nombre||('Region '+row.region);const failed=['error','cuota_agotada'].includes(row.estado);const fresh=Number(row.nuevas)||0;const updated=Number(row.actualizadas)||0;return count>0?name+': '+count+(failed?' paginas intentadas':' paginas consultadas')+(fresh>0||!failed?', '+fresh+' nuevas':'')+(updated>0||!failed?', '+updated+' actualizadas':'')+', '+(Number(row.paginas_pendientes)||0)+' pendientes; '+caSyncStatusLabel(row.estado)+(row.error?' - '+row.error:''):name+': no se confirmo consulta de paginas; '+caSyncStatusLabel(row.estado)+(row.error?' - '+row.error:'');});
    const limit=data.paginas_maximas_por_ejecucion?'; limite de esta ejecucion: '+data.paginas_maximas_por_ejecucion+' paginas':'';
    if(label){label.textContent=lines.join(' | ')+limit;label.dataset.kind=problems.length?'error':pages===0||pending.length?'warning':'success';}
-   await caLoadPrivate();
+   await caLoadPrivate({force:true});
   }catch(error){const message=error.message||'No se completo la sincronizacion.';if(label){label.textContent='No se confirmo una consulta completa a Mercado Publico. '+message;label.dataset.kind='error';}caSetStatus(message,'error');}
   finally{button.disabled=false;if(cresceDashboardState.summary)caRenderSummary(cresceDashboardState.summary);}
  });
 }
 function caBuildDashboard(){
- main.innerHTML=`<a class="back" href="#inicio">← Todas las áreas</a><div class="workspace-heading">${icon(areas[0])}<div><span class="eyebrow">TROVOFARMA STORE · DATOS PRIVADOS</span><h1>Compra Ágil</h1><p>Actualizar pantalla vuelve a leer los datos guardados. Buscar compras nuevas consulta Mercado Publico; la fecha del Radar no constituye una consulta.</p></div></div><div class="workspace ca-workspace"><nav class="sidebar" aria-label="Secciones de Trovofarma Store">${areas[0].modules.map(m=>`<a href="#trovofarma/${slug(m)}" ${m==='Compra Ágil'?'aria-current="page"':''}>${m}</a>`).join('')}</nav><section class="ca-main"><div class="module-heading"><h2>Radar de Oportunidades</h2><button type="button" id="ca-refresh" class="ca-secondary">Actualizar pantalla</button></div><p class="module-description">Actualizar pantalla solo vuelve a leer los datos guardados. Buscar compras nuevas consulta Mercado P\u00fablico; la fecha del Radar no significa que la API ya se consult\u00f3.</p><div id="ca-status" class="ca-status" role="status" hidden></div><div id="ca-auth"></div><div id="ca-data" hidden><div class="ca-sync-controls"><label>Regiones<select id="ca-sync-regions"><option value="9,14">Araucanía y Los Ríos</option><option value="9">Araucanía</option><option value="14">Los Ríos</option></select></label><label>Inicio de recuperación<input id="ca-sync-from" type="date"></label><div class="ca-sync-date-info"><span id="ca-sync-today"></span><span>\u00daltima sincronizaci\u00f3n exitosa: indicador superior.</span></div><button type="button" id="ca-sync" class="ca-secondary">Buscar compras nuevas</button><p id="ca-sync-result" class="ca-sync-result" role="status" aria-live="polite"></p></div><div id="ca-metrics" class="metrics ca-metrics"></div><div class="ca-summary-grid"><section class="panel"><h3>Compras por región</h3><div id="ca-regions"></div></section><section class="panel"><h3>Últimas consultas</h3><div id="ca-recent"></div></section></div><div class="ca-tabs" role="tablist" aria-label="Compra Ágil"><button type="button" role="tab" aria-selected="true" data-ca-tab="radar">Radar</button><button type="button" role="tab" aria-selected="false" data-ca-tab="proveedores">Proveedores</button><button type="button" role="tab" aria-selected="false" data-ca-tab="evaluacion">Evaluación comercial</button></div><section data-ca-pane="radar" class="ca-pane"><div class="ca-filters"><label>Buscar<input id="ca-search" type="search" placeholder="Código, institución o nombre"></label><label>Región<select id="ca-region"><option value="">Todas las regiones</option></select></label><label>Publicación desde<input id="ca-date-from" type="date"></label><label>Publicación hasta<input id="ca-date-to" type="date"></label><label>Monto mínimo CLP<input id="ca-min-amount" type="number" min="0" inputmode="numeric"></label><label>Monto máximo CLP<input id="ca-max-amount" type="number" min="0" inputmode="numeric"></label><label class="ca-current-filter"><input id="ca-only-current" type="checkbox"> Solo oportunidades vigentes</label><label>Seguimiento<select id="ca-tracking-filter"><option value="">Todas</option><option value="parcial">Cobertura parcial</option><option value="pendientes">Productos pendientes</option><option value="sin_detalle">Falta consultar detalle</option></select></label><label>Ordenar por<select id="ca-sort"><option value="fecha_publicacion">Fecha de publicación</option><option value="fecha_cierre">Fecha de cierre</option><option value="monto_estimado">Monto estimado</option><option value="nombre">Nombre</option></select></label><label>Dirección<select id="ca-direction"><option value="desc">Descendente</option><option value="asc">Ascendente</option></select></label></div><div class="ca-table-wrap"><table class="ca-table"><thead><tr><th>Institución</th><th>Compra</th><th>Código</th><th>Región</th><th>Monto estimado</th><th>Cierre</th><th>Estado</th><th>Acción</th></tr></thead><tbody id="ca-opportunity-rows"></tbody></table></div><div class="ca-pagination"><button type="button" id="ca-prev" class="ca-secondary">Anterior</button><span id="ca-page-label"></span><button type="button" id="ca-next" class="ca-secondary">Siguiente</button></div><section id="ca-detail-panel" class="panel ca-detail-panel" hidden></section></section><section data-ca-pane="proveedores" class="ca-pane" hidden><div class="ca-supplier-controls"><label>Buscar por código o nombre<input id="ca-supplier-search" type="search" placeholder="Código o nombre del artículo"></label><label>Proveedor<select id="ca-supplier-filter"><option value="">Todos</option><option value="cone">CONE</option><option value="herbanatura">Herbanatura</option></select></label><button type="button" id="ca-supplier-refresh" class="ca-secondary">Buscar</button></div><p class="ca-stock-note">Los datos de disponibilidad pertenecen al proveedor; no representan inventario propio de Trovofarma Store.</p><div id="ca-supplier-list" class="ca-supplier-grid"></div><section class="panel ca-import-panel"><h3>Importar catalogo para revision</h3><p>CSV normalizado. La vista previa no guarda datos. Los registros conservan proveedor, precio, IVA y stock sin confirmar, y mantienen codigos repetidos.</p><label>Archivo CSV<input id="ca-import-file" type="file" accept=".csv,text/csv"></label><button type="button" id="ca-import-preview" class="ca-secondary">Ver vista previa</button><div id="ca-import-metrics" class="ca-import-metrics"></div><p id="ca-import-status" role="status"></p><button type="button" id="ca-import-save" class="ca-secondary" disabled>Guardar en revision privada</button><h3>Catalogos en revision privada</h3><button type="button" id="ca-import-review-refresh" class="ca-secondary">Actualizar revisiones</button><div id="ca-import-review"></div></section></section><section data-ca-pane="evaluacion" class="ca-pane" hidden><div class="ca-evaluation-intro"><h3>Evaluación comercial</h3><p>El análisis se mantiene pendiente hasta contar con equivalencias técnicas y costos verificados.</p></div><div class="ca-evaluation-grid">${['Costo neto','IVA','Descuentos','Transporte','Capital necesario','Margen','Utilidad estimada'].map(label=>`<article><span>${label}</span><strong>Pendiente</strong></article>`).join('')}</div><p class="ca-warning">No se calculan valores ni se asume equivalencia de productos automáticamente. La evaluación y la preparación de ofertas son manuales.</p><section id="ca-manual-prep" class="panel ca-manual-prep" hidden></section></section><div class="ca-account"><span id="ca-account-label"></span><button type="button" id="ca-signout" class="ca-link-button">Cerrar sesión</button></div></div></section></div>`;
+ main.innerHTML=`<a class="back" href="#inicio">← Todas las áreas</a><div class="workspace-heading">${icon(areas[0])}<div><span class="eyebrow">TROVOFARMA STORE · DATOS PRIVADOS</span><h1>Compra Ágil</h1><p>Actualizar pantalla vuelve a leer los datos guardados. Buscar compras nuevas consulta Mercado Publico; la fecha del Radar no constituye una consulta.</p></div></div><div class="workspace ca-workspace"><nav class="sidebar" aria-label="Secciones de Trovofarma Store">${areas[0].modules.map(m=>`<a href="#trovofarma/${slug(m)}" ${m==='Compra Ágil'?'aria-current="page"':''}>${m}</a>`).join('')}</nav><section class="ca-main"><div class="module-heading"><h2>Radar de Oportunidades</h2><button type="button" id="ca-refresh" class="ca-secondary">Actualizar pantalla</button></div><p class="module-description">Actualizar pantalla solo vuelve a leer los datos guardados. Buscar compras nuevas consulta Mercado P\u00fablico; la fecha del Radar no significa que la API ya se consult\u00f3.</p><div id="ca-status" class="ca-status" role="status" hidden></div><div id="ca-auth"></div><div id="ca-data" hidden><div id="ca-dashboard-overview"><div class="ca-sync-controls"><label>Regiones<select id="ca-sync-regions"><option value="9,14">Araucanía y Los Ríos</option><option value="9">Araucanía</option><option value="14">Los Ríos</option></select></label><label>Inicio de recuperación<input id="ca-sync-from" type="date"></label><div class="ca-sync-date-info"><span id="ca-sync-today"></span><span>\u00daltima sincronizaci\u00f3n exitosa: indicador superior.</span></div><button type="button" id="ca-sync" class="ca-secondary">Buscar compras nuevas</button><p id="ca-sync-result" class="ca-sync-result" role="status" aria-live="polite"></p></div><div id="ca-metrics" class="metrics ca-metrics"></div><div class="ca-summary-grid"><section class="panel"><h3>Compras por región</h3><div id="ca-regions"></div></section><section class="panel"><h3>Últimas consultas</h3><div id="ca-recent"></div></section></div><div class="ca-tabs" role="tablist" aria-label="Compra Ágil"><button type="button" role="tab" aria-selected="true" data-ca-tab="radar">Radar</button><button type="button" role="tab" aria-selected="false" data-ca-tab="proveedores">Proveedores</button><button type="button" role="tab" aria-selected="false" data-ca-tab="evaluacion">Evaluación comercial</button></div><section data-ca-pane="radar" class="ca-pane"><div class="ca-filters"><label>Buscar<input id="ca-search" type="search" placeholder="Código, institución o nombre"></label><label>Región<select id="ca-region"><option value="">Todas las regiones</option></select></label><label>Publicación desde<input id="ca-date-from" type="date"></label><label>Publicación hasta<input id="ca-date-to" type="date"></label><label>Monto mínimo CLP<input id="ca-min-amount" type="number" min="0" inputmode="numeric"></label><label>Monto máximo CLP<input id="ca-max-amount" type="number" min="0" inputmode="numeric"></label><label class="ca-current-filter"><input id="ca-only-current" type="checkbox"> Solo oportunidades vigentes</label><label>Seguimiento<select id="ca-tracking-filter"><option value="">Todas</option><option value="parcial">Cobertura parcial</option><option value="pendientes">Productos pendientes</option><option value="sin_detalle">Falta consultar detalle</option></select></label><label>Ordenar por<select id="ca-sort"><option value="fecha_publicacion">Fecha de publicación</option><option value="fecha_cierre">Fecha de cierre</option><option value="monto_estimado">Monto estimado</option><option value="nombre">Nombre</option></select></label><label>Dirección<select id="ca-direction"><option value="desc">Descendente</option><option value="asc">Ascendente</option></select></label></div><div class="ca-table-wrap ca-radar-table-wrap"><div id="ca-radar-loading" class="ca-radar-loading" role="status" aria-live="polite" hidden></div><table class="ca-table"><thead><tr><th>Institución</th><th>Compra</th><th>Código</th><th>Región</th><th>Monto estimado</th><th>Cierre</th><th>Estado</th><th>Acción</th></tr></thead><tbody id="ca-opportunity-rows"></tbody></table></div><div class="ca-pagination"><button type="button" id="ca-prev" class="ca-secondary">Anterior</button><span id="ca-page-label"></span><button type="button" id="ca-next" class="ca-secondary">Siguiente</button></div></section><section data-ca-pane="proveedores" class="ca-pane" hidden><div class="ca-supplier-controls"><label>Buscar por código o nombre<input id="ca-supplier-search" type="search" placeholder="Código o nombre del artículo"></label><label>Proveedor<select id="ca-supplier-filter"><option value="">Todos</option><option value="cone">CONE</option><option value="herbanatura">Herbanatura</option></select></label><button type="button" id="ca-supplier-refresh" class="ca-secondary">Buscar</button></div><p class="ca-stock-note">Los datos de disponibilidad pertenecen al proveedor; no representan inventario propio de Trovofarma Store.</p><div id="ca-supplier-list" class="ca-supplier-grid"></div><section class="panel ca-import-panel"><h3>Importar catalogo para revision</h3><p>CSV normalizado. La vista previa no guarda datos. Los registros conservan proveedor, precio, IVA y stock sin confirmar, y mantienen codigos repetidos.</p><label>Archivo CSV<input id="ca-import-file" type="file" accept=".csv,text/csv"></label><button type="button" id="ca-import-preview" class="ca-secondary">Ver vista previa</button><div id="ca-import-metrics" class="ca-import-metrics"></div><p id="ca-import-status" role="status"></p><button type="button" id="ca-import-save" class="ca-secondary" disabled>Guardar en revision privada</button><h3>Catalogos en revision privada</h3><button type="button" id="ca-import-review-refresh" class="ca-secondary">Actualizar revisiones</button><div id="ca-import-review"></div></section></section><section data-ca-pane="evaluacion" class="ca-pane" hidden><div class="ca-evaluation-intro"><h3>Evaluación comercial</h3><p>El análisis se mantiene pendiente hasta contar con equivalencias técnicas y costos verificados.</p></div><div class="ca-evaluation-grid">${['Costo neto','IVA','Descuentos','Transporte','Capital necesario','Margen','Utilidad estimada'].map(label=>`<article><span>${label}</span><strong>Pendiente</strong></article>`).join('')}</div><p class="ca-warning">No se calculan valores ni se asume equivalencia de productos automáticamente. La evaluación y la preparación de ofertas son manuales.</p><section id="ca-manual-prep" class="panel ca-manual-prep" hidden></section></section></div><section id="ca-detail-panel" class="panel ca-detail-panel ca-full-page-view" hidden></section><div class="ca-account"><span id="ca-account-label"></span><button type="button" id="ca-signout" class="ca-link-button">Cerrar sesión</button></div></div></section></div>`;
  const config=dashboardConfig();if(!config){caRenderLogin('Configuración incompleta: completa supabase-config.js con URL y clave pública sb_publishable_.');return;}
- if(!cresceDashboardAuthSubscription)cresceDashboardAuthSubscription=config.auth.onAuthStateChange((_event,session)=>{if(location.hash.includes('trovofarma/compra-agil'))queueMicrotask(()=>{if(_event==='PASSWORD_RECOVERY'){caRenderNewPassword();return;}if(session){if(caAuthMode!=='recovery'&&caAuthMode!=='new-password'){const label=document.getElementById('ca-account-label');if(label)label.textContent='Sesión activa';caLoadPrivate();}}else if(caAuthMode!=='recovery')caRenderLogin();});}).data.subscription;
+ if(!cresceDashboardAuthSubscription)cresceDashboardAuthSubscription=config.auth.onAuthStateChange(caHandleAuthStateChange).data.subscription;
  if(location.hash.includes('access_token=')||location.hash.includes('error_description=')){const params=new URLSearchParams(location.hash.slice(location.hash.indexOf('#')+1));if(params.get('type')==='recovery')caRenderNewPassword();else if(params.has('error_description'))caRenderLogin('El enlace no es válido o venció. Solicita uno nuevo para recuperar tu contraseña.');}else if(caAuthMode==='recovery'||caAuthMode==='new-password')caRenderLogin();
- document.getElementById('ca-refresh').addEventListener('click',()=>caLoadPrivate());caManualSyncSetup();
+ document.getElementById('ca-refresh').addEventListener('click',()=>caLoadPrivate({force:true}));caManualSyncSetup();
  document.getElementById('ca-signout').addEventListener('click',async()=>{await config.auth.signOut();caRenderLogin();});
  document.querySelectorAll('[data-ca-tab]').forEach(button=>button.addEventListener('click',()=>{caShowTab(button.dataset.caTab);if(button.dataset.caTab==='proveedores'){caLoadSuppliers();caPrivateReviewLoad();}}));
  let debounce;for(const id of ['ca-search','ca-region','ca-date-from','ca-date-to','ca-min-amount','ca-max-amount','ca-sort','ca-direction','ca-tracking-filter','ca-only-current'])document.getElementById(id).addEventListener(id==='ca-search'||id==='ca-min-amount'||id==='ca-max-amount'?'input':'change',()=>{clearTimeout(debounce);cresceDashboardState.page=1;debounce=setTimeout(()=>caLoadOpportunities().catch(error=>caSetStatus(error.message,'error')),250);});

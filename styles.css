@@ -2387,3 +2387,62 @@ footer span {
     box-shadow: none;
   }
 }
+
+/* Radar: show refresh feedback without changing table geometry. */
+.ca-radar-table-wrap {
+  position: relative;
+}
+.ca-radar-loading:not([hidden]) {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 12px;
+  max-width: min(32rem, calc(100% - 24px));
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text, #24342d);
+  box-shadow: 0 3px 12px rgb(20 35 28 / 12%);
+  font-size: 12px;
+  pointer-events: none;
+}
+.ca-radar-loading[data-kind="error"] {
+  color: var(--danger, #8b2635);
+}
+
+/* Opportunity detail replaces the dashboard view in the same full workspace. */
+.ca-full-page-view {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  min-height: 60vh;
+  margin-top: 0;
+  scroll-margin-top: calc(var(--header-height) + 16px);
+}
+.ca-detail-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+.ca-detail-back {
+  min-height: 44px;
+  white-space: nowrap;
+}
+.ca-detail-view-title:focus,
+#ca-detail-view-title:focus {
+  outline: 2px solid var(--accent, #247552);
+  outline-offset: 4px;
+}
+@media (max-width: 640px) {
+  .ca-full-page-view {
+    padding: 18px;
+  }
+  .ca-detail-head {
+    grid-template-columns: 1fr;
+  }
+  .ca-detail-back {
+    justify-self: start;
+  }
+}

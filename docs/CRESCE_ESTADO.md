@@ -18,6 +18,11 @@
 5. Evitar saltos provocados por `tbody.replaceChildren()` durante loading y `scrollIntoView()` sobre un panel bajo la tabla; validar contra código actual.
 6. Probar y publicar solo si la corrección está completa. Documentar pruebas y pasos de Vercel.
 
+## Navegacion del Radar (20-11-2026)
+- La vista de oportunidad reemplaza el panel de trabajo en el mismo espacio; Radar, filtros y pagina permanecen montados. Volver restaura desplazamiento y foco.
+- Las lecturas conservan filas mientras cargan, deduplican solicitudes y descartan respuestas antiguas. Renovaciones de token no recargan; cambios de usuario si.
+- Verificado localmente con node --check app.js, git diff --check y pruebas DOM simuladas de navegacion, concurrencia y sesion. No se probo contra produccion ni en el Preview publicado.
+
 ## Posteriormente (no mezclar con la tarea inmediata)
 - Completar recuperación/sincronización de páginas pendientes del Radar y distinguir última ejecución parcial de última exitosa.
 - Verificar coincidencias de proveedores y candidatos staging contra catálogos reales.
