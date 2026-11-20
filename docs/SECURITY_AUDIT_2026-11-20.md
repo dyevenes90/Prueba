@@ -171,3 +171,10 @@ Se verificó que en la función desplegada v11 continúa `auth: ["user", "secret
 **Plan mínimo recomendado:** en **Supabase Project Settings → API Keys → Secret keys**, crear una clave privada **con nombre `cron`** (no una nueva variable arbitraria de Edge Function Secrets), sin copiarla en frontend, repositorio ni conversación. Solo un futuro proceso confiable de Cron debería recibir su valor por canal seguro. Mantener `verify_jwt=false` y validación dual. Esperar a que la configuración quede disponible en las funciones y repetir solicitud negativa con la clave pública sin JWT; debería rechazarse con 401/403, no 500. No enviar acciones de sincronización ni usar la clave secreta para esta prueba.
 
 **No se hicieron cambios en infraestructura desde esta auditoría; pendiente configuración en panel por el propietario.**
+
+
+## 11. Validación de clave Cron y rechazo sin sesión (20-11-2026)
+
+El propietario creó una clave privada con nombre `cron` en **Secret keys** de Supabase (manteniendo `default`). Tras el cambio repitió POST a `compra-agil-sync` con la clave pública en `apikey`, **sin JWT y sin acción**, cuerpo `{}`: recibió **HTTP 401**. Los registros de `function_edge_logs` confirman `POST | 401` a `2026-11-20T19:55:55.310Z`, sin `EDGE_FUNCTION_ERROR`. El anterior `NO_KEYS_CONFIGURED` quedó resuelto para esta ruta de prueba. No se invocó sincronización de regiones ni se efectuaron escrituras.
+
+**Aún pendiente:** prueba positiva desde sesión autorizada usando únicamente `Actualizar pantalla` (lectura), verificar que una sesión no autorizada no obtiene datos, investigar si existe algún Cron real configurado y revisar claves huérfanas (se creó también una publishable key llamada `cron` que no es necesaria para el modo `secret:cron`). **No retirar ninguna clave sin comprobar dependencia.**
