@@ -217,7 +217,7 @@ function caRadarOpportunityMarkup(item){
   if(label==='Código'){
    const link=document.createElement('a');link.href='https://buscador.mercadopublico.cl/compra-agil';link.target='_blank';link.rel='noopener noreferrer';link.className='ca-official-process-link';link.textContent='Abrir en Mercado Público';
    const copy=caNode('button','Copiar código','ca-small-button');copy.type='button';copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(String(item.codigo));copy.textContent='Código copiado';}catch{copy.textContent='Código: '+item.codigo;}});
-   cell.append(document.createTextNode(caDisplay(value)+' '),link,copy);
+   cell.append(document.createTextNode(' '),link,copy);
   }
   tr.append(cell);
  }
