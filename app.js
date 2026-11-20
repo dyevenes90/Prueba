@@ -41,6 +41,8 @@ let caAnalysisQuoteContext=null;
 let caRadarRequestSequence=0;
 let caRadarPending=null;
 let caRadarRowsSignature='';
+let caRadarVisibleItems=[];
+let caRadarStatusTimer=null;
 let caRadarReturnState=null;
 let caDetailRequestSequence=0;
 let caDetailCache=new Map();
@@ -155,7 +157,7 @@ async function caLoadPrivate({force=false}={}){
 }
 function caClearPrivateView(){
  caAuthRevision++;caPrivateLoadedUserId=null;caPrivateLoadPromise=null;
- caRadarRequestSequence++;caRadarPending=null;caRadarRowsSignature='';
+ caRadarRequestSequence++;caRadarPending=null;caRadarRowsSignature='';caRadarVisibleItems=[];
  caDetailRequestSequence++;caDetailCache.clear();caRadarReturnState=null;
  cresceDashboardState.selected=null;caDetailCurrentCode=null;
  const tbody=document.getElementById('ca-opportunity-rows');tbody?.replaceChildren();
@@ -206,11 +208,57 @@ function caRadarLoading(message='',kind='loading'){
 function caOpportunityRowSignature(items){
  return JSON.stringify((items||[]).map(item=>[item.codigo,item.organismo,item.nombre,item.region,item.monto_estimado,item.fecha_cierre,item.vigencia,item.clasificacion_cobertura,item.productos_confirmados,item.productos_posibles,item.productos_total,item.tiene_detalle,item.seguimiento_no_disponible]));
 }
+
+/* Revisión sugerida: señales orientativas, nunca bloquean ni ocultan oportunidades. */
+function caOpportunityReviewReason(item){
+ const plain=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+ const title=plain(item.nombre);
+ const detail=caDetailCache.get(item.codigo)?.detail;
+ const products=Array.isArray(detail?.productos_solicitados)?detail.productos_solicitados:[];
+ if(products.some(p=>['GL','GLOBAL'].includes(String(p.unidad_medida??'').trim().toUpperCase())))return 'Cantidad global (GL): comprobar qué productos incluye el anexo.';
+ const technical=plain([detail?.descripcion,...products.map(p=>p.descripcion)].join(' '));
+ if(/\bsegun (?:archivo|anexo|adjunto|documento)\b/.test(technical))return 'El detalle remite a un archivo: revisar los adjuntos.';
+ if(/\b(varios|varias|diversos|diversas)\b/.test(title)||/\bsegun (?:archivo|anexo|adjunto)\b/.test(title))return 'Descripción general: comprobar cantidades y adjuntos.';
+ return '';
+}
+function caRadarStatus(item){
+ const close=caSantiagoDate(item.fecha_cierre);
+ if(item.vigencia==='vencida'||(close.verified&&Date.parse(item.fecha_cierre)<=Date.now()))return 'Vencida';
+ return item.vigencia==='abierta_confirmada'&&close.verified&&Date.parse(item.fecha_cierre)>Date.now()
+  ?'Abierta confirmada':'Vigencia pendiente de confirmación';
+}
+function caUpdateRadarTimeStatuses(){
+ const tbody=document.getElementById('ca-opportunity-rows');
+ if(!tbody||!caRadarVisibleItems.length||tbody.rows.length!==caRadarVisibleItems.length)return;
+ let updated=false;
+ for(let i=0;i<caRadarVisibleItems.length;i++){
+  const cell=tbody.rows[i].querySelector('td[data-label="Vigencia"]');
+  const label=caRadarStatus(caRadarVisibleItems[i]);
+  if(cell&&cell.textContent!==label){cell.textContent=label;updated=true;}
+ }
+ if(updated&&document.getElementById('ca-only-current')?.checked)caRadarLoading('La hora de cierre cambió el estado de una oportunidad. Actualiza pantalla para volver a aplicar el filtro de vigentes.','warning');
+}
+function caRenderRadarReview(){
+ const panel=document.getElementById('ca-review-panel'),list=document.getElementById('ca-review-list'),count=document.getElementById('ca-review-count');
+ if(!panel||!list||!count)return;
+ const flagged=caRadarVisibleItems.map(item=>({item,reason:caOpportunityReviewReason(item)})).filter(row=>row.reason);
+ count.textContent=String(flagged.length);
+ list.replaceChildren();
+ if(!flagged.length)list.append(caNode('p','No hay señales automáticas en esta página. Igualmente revisa los requisitos y anexos de cada compra antes de cotizar.','ca-muted'));
+ for(const {item,reason} of flagged){
+  const entry=caNode('article',undefined,'ca-review-item');
+  const body=caNode('div');
+  body.append(caNode('strong',caDisplay(item.nombre)),caNode('small',caDisplay(item.codigo)+' · '+caDisplay(item.organismo)),caNode('p',reason));
+  const open=caNode('button','Ver oportunidad','ca-secondary');open.type='button';open.addEventListener('click',event=>caOpenDetail(item,event.currentTarget));
+  entry.append(body,open);list.append(entry);
+ }
+ panel.hidden=false;
+}
+
 function caRadarOpportunityMarkup(item){
  const tr=document.createElement('tr');
  const close=caSantiagoDate(item.fecha_cierre);
- const confirmed=item.vigencia==='abierta_confirmada'&&close.verified&&Date.parse(item.fecha_cierre)>Date.now();
- const status=item.vigencia==='vencida'||(close.verified&&Date.parse(item.fecha_cierre)<=Date.now())?'Vencida':confirmed?'Abierta confirmada':'Vigencia pendiente de confirmación';
+ const status=caRadarStatus(item);
  const values=[[item.organismo,'Institución'],[item.nombre,'Compra'],[item.codigo,'Código'],[item.region,'Región'],[caMoney(item.monto_estimado),'Monto estimado'],[close.text,'Cierre'],[status,'Vigencia']];
  for(const [value,label] of values){
   const cell=caNode('td',caDisplay(value));cell.dataset.label=label;
@@ -224,6 +272,7 @@ function caRadarOpportunityMarkup(item){
  const action=caNode('td',undefined,'ca-row-actions');action.dataset.label='Acción';action.dataset.codigo=item.codigo;
  const coverageLabel=item.seguimiento_no_disponible?'Seguimiento no disponible':!item.tiene_detalle?'Falta consultar detalle':item.clasificacion_cobertura==='SIN_EVALUAR'?'Sin evaluar':`Cobertura ${item.clasificacion_cobertura==='COBERTURA_COMPLETA'?'completa':'parcial'} · ${item.productos_confirmados||0}/${item.productos_total||0}${item.productos_posibles?` · ${item.productos_posibles} posibles`:''}`;
  action.append(caNode('small',coverageLabel,'ca-coverage-label'));
+ if(caOpportunityReviewReason(item))action.append(caNode('small','Revisar anexos','ca-review-hint'));
  const view=caNode('button','Ver oportunidad','ca-small-button');view.type='button';view.addEventListener('click',event=>caOpenDetail(item,event.currentTarget));action.append(view);tr.append(action);
  return tr;
 }
@@ -255,7 +304,8 @@ async function caLoadOpportunities(){
     const rows=!result.items?.length?[(()=>{const row=caNode('tr'),cell=caNode('td','No hay resultados para estos filtros.','ca-empty');cell.colSpan=8;row.append(cell);return row;})()]:result.items.map(caRadarOpportunityMarkup);
     tbody.replaceChildren(...rows);caRadarRowsSignature=signature;
    }
-   const total=result.total||0,page=result.pagina||filters.pagina,perPage=result.por_pagina||25;
+   caRadarVisibleItems=result.items||[];caRenderRadarReview();caUpdateRadarTimeStatuses();
+    const total=result.total||0,page=result.pagina||filters.pagina,perPage=result.por_pagina||25;
    document.getElementById('ca-page-label').textContent=`Página ${page} · ${total} resultados filtrados${result.parcial?' · conjunto parcial (límite de seguridad de 10.000)':''}`;
    document.getElementById('ca-prev').disabled=page<=1;document.getElementById('ca-next').disabled=page*perPage>=total;
    caRadarLoading(trackingUnavailable?'Seguimiento no disponible; se conserva el Radar.':result.parcial?'Lectura parcial: se alcanzó el límite seguro.':'',trackingUnavailable||result.parcial?'warning':'loading');
@@ -281,6 +331,7 @@ function caCloseDetail(){
  const panel=document.getElementById('ca-detail-panel'),overview=document.getElementById('ca-dashboard-overview');
  panel.hidden=true;if(overview)overview.hidden=false;
  const state=caRadarReturnState;caRadarReturnState=null;cresceDashboardState.selected=null;
+ caRenderRadarReview();
  if(state){window.scrollTo({top:state.scrollY,behavior:'instant'});if(state.focus?.isConnected)state.focus.focus({preventScroll:true});}
 }
 async function caOpenDetail(opportunity,trigger=document.activeElement,{refresh=false}={}){
@@ -536,7 +587,7 @@ function caPrivateImportSetup(){const picker=document.getElementById('ca-import-
  });
 }
 function caBuildDashboard(){
- main.innerHTML=`<a class="back" href="#inicio">← Todas las áreas</a><div class="workspace-heading">${icon(areas[0])}<div><span class="eyebrow">TROVOFARMA STORE · DATOS PRIVADOS</span><h1>Compra Ágil</h1><p>Actualizar pantalla vuelve a leer los datos guardados. Buscar compras nuevas consulta Mercado Publico; la fecha del Radar no constituye una consulta.</p></div></div><div class="workspace ca-workspace"><nav class="sidebar" aria-label="Secciones de Trovofarma Store">${areas[0].modules.map(m=>`<a href="#trovofarma/${slug(m)}" ${m==='Compra Ágil'?'aria-current="page"':''}>${m}</a>`).join('')}</nav><section class="ca-main"><div class="module-heading"><h2>Radar de Oportunidades</h2><button type="button" id="ca-refresh" class="ca-secondary">Actualizar pantalla</button></div><p class="module-description">Actualizar pantalla solo vuelve a leer los datos guardados. Buscar compras nuevas consulta Mercado P\u00fablico; la fecha del Radar no significa que la API ya se consult\u00f3.</p><div id="ca-status" class="ca-status" role="status" hidden></div><div id="ca-auth"></div><div id="ca-data" hidden><div id="ca-dashboard-overview"><div class="ca-sync-controls"><label>Regiones<select id="ca-sync-regions"><option value="9,14">Araucanía y Los Ríos</option><option value="9">Araucanía</option><option value="14">Los Ríos</option></select></label><label>Inicio de recuperación<input id="ca-sync-from" type="date"></label><div class="ca-sync-date-info"><span id="ca-sync-today"></span><span>\u00daltima sincronizaci\u00f3n exitosa: indicador superior.</span></div><button type="button" id="ca-sync" class="ca-secondary">Buscar compras nuevas</button><p id="ca-sync-result" class="ca-sync-result" role="status" aria-live="polite"></p></div><div id="ca-metrics" class="metrics ca-metrics"></div><div class="ca-summary-grid"><section class="panel"><h3>Compras por región</h3><div id="ca-regions"></div></section><section class="panel"><h3>Últimas consultas</h3><div id="ca-recent"></div></section></div><div class="ca-tabs" role="tablist" aria-label="Compra Ágil"><button type="button" role="tab" aria-selected="true" data-ca-tab="radar">Radar</button><button type="button" role="tab" aria-selected="false" data-ca-tab="proveedores">Proveedores</button><button type="button" role="tab" aria-selected="false" data-ca-tab="evaluacion">Evaluación comercial</button></div><section data-ca-pane="radar" class="ca-pane"><div class="ca-filters"><label>Buscar<input id="ca-search" type="search" placeholder="Código, institución o nombre"></label><label>Región<select id="ca-region"><option value="">Todas las regiones</option></select></label><label>Publicación desde<input id="ca-date-from" type="date"></label><label>Publicación hasta<input id="ca-date-to" type="date"></label><label>Monto mínimo CLP<input id="ca-min-amount" type="number" min="0" inputmode="numeric"></label><label>Monto máximo CLP<input id="ca-max-amount" type="number" min="0" inputmode="numeric"></label><label class="ca-current-filter"><input id="ca-only-current" type="checkbox"> Solo oportunidades vigentes</label><label>Seguimiento<select id="ca-tracking-filter"><option value="">Todas</option><option value="parcial">Cobertura parcial</option><option value="pendientes">Productos pendientes</option><option value="sin_detalle">Falta consultar detalle</option></select></label><label>Ordenar por<select id="ca-sort"><option value="fecha_publicacion">Fecha de publicación</option><option value="fecha_cierre">Fecha de cierre</option><option value="monto_estimado">Monto estimado</option><option value="nombre">Nombre</option></select></label><label>Dirección<select id="ca-direction"><option value="desc">Descendente</option><option value="asc">Ascendente</option></select></label></div><div class="ca-table-wrap ca-radar-table-wrap"><div id="ca-radar-loading" class="ca-radar-loading" role="status" aria-live="polite" hidden></div><table class="ca-table"><thead><tr><th>Institución</th><th>Compra</th><th>Código</th><th>Región</th><th>Monto estimado</th><th>Cierre</th><th>Estado</th><th>Acción</th></tr></thead><tbody id="ca-opportunity-rows"></tbody></table></div><div class="ca-pagination"><button type="button" id="ca-prev" class="ca-secondary">Anterior</button><span id="ca-page-label"></span><button type="button" id="ca-next" class="ca-secondary">Siguiente</button></div></section><section data-ca-pane="proveedores" class="ca-pane" hidden><div class="ca-supplier-controls"><label>Buscar por código o nombre<input id="ca-supplier-search" type="search" placeholder="Código o nombre del artículo"></label><label>Proveedor<select id="ca-supplier-filter"><option value="">Todos</option><option value="cone">CONE</option><option value="herbanatura">Herbanatura</option></select></label><button type="button" id="ca-supplier-refresh" class="ca-secondary">Buscar</button></div><p class="ca-stock-note">Los datos de disponibilidad pertenecen al proveedor; no representan inventario propio de Trovofarma Store.</p><div id="ca-supplier-list" class="ca-supplier-grid"></div><section class="panel ca-import-panel"><h3>Importar catalogo para revision</h3><p>CSV normalizado. La vista previa no guarda datos. Los registros conservan proveedor, precio, IVA y stock sin confirmar, y mantienen codigos repetidos.</p><label>Archivo CSV<input id="ca-import-file" type="file" accept=".csv,text/csv"></label><button type="button" id="ca-import-preview" class="ca-secondary">Ver vista previa</button><div id="ca-import-metrics" class="ca-import-metrics"></div><p id="ca-import-status" role="status"></p><button type="button" id="ca-import-save" class="ca-secondary" disabled>Guardar en revision privada</button><h3>Catalogos en revision privada</h3><button type="button" id="ca-import-review-refresh" class="ca-secondary">Actualizar revisiones</button><div id="ca-import-review"></div></section></section><section data-ca-pane="evaluacion" class="ca-pane" hidden><div class="ca-evaluation-intro"><h3>Evaluación comercial</h3><p>El análisis se mantiene pendiente hasta contar con equivalencias técnicas y costos verificados.</p></div><div class="ca-evaluation-grid">${['Costo neto','IVA','Descuentos','Transporte','Capital necesario','Margen','Utilidad estimada'].map(label=>`<article><span>${label}</span><strong>Pendiente</strong></article>`).join('')}</div><p class="ca-warning">No se calculan valores ni se asume equivalencia de productos automáticamente. La evaluación y la preparación de ofertas son manuales.</p><section id="ca-manual-prep" class="panel ca-manual-prep" hidden></section></section></div><section id="ca-detail-panel" class="panel ca-detail-panel ca-full-page-view" hidden></section><div class="ca-account"><span id="ca-account-label"></span><button type="button" id="ca-signout" class="ca-link-button">Cerrar sesión</button></div></div></section></div>`;
+ main.innerHTML=`<a class="back" href="#inicio">← Todas las áreas</a><div class="workspace-heading">${icon(areas[0])}<div><span class="eyebrow">TROVOFARMA STORE · DATOS PRIVADOS</span><h1>Compra Ágil</h1><p>Actualizar pantalla vuelve a leer los datos guardados. Buscar compras nuevas consulta Mercado Publico; la fecha del Radar no constituye una consulta.</p></div></div><div class="workspace ca-workspace"><nav class="sidebar" aria-label="Secciones de Trovofarma Store">${areas[0].modules.map(m=>`<a href="#trovofarma/${slug(m)}" ${m==='Compra Ágil'?'aria-current="page"':''}>${m}</a>`).join('')}</nav><section class="ca-main"><div class="module-heading"><h2>Radar de Oportunidades</h2><button type="button" id="ca-refresh" class="ca-secondary">Actualizar pantalla</button></div><p class="module-description">Actualizar pantalla solo vuelve a leer los datos guardados. Buscar compras nuevas consulta Mercado P\u00fablico; la fecha del Radar no significa que la API ya se consult\u00f3.</p><div id="ca-status" class="ca-status" role="status" hidden></div><div id="ca-auth"></div><div id="ca-data" hidden><div id="ca-dashboard-overview"><div class="ca-sync-controls"><label>Regiones<select id="ca-sync-regions"><option value="9,14">Araucanía y Los Ríos</option><option value="9">Araucanía</option><option value="14">Los Ríos</option></select></label><label>Inicio de recuperación<input id="ca-sync-from" type="date"></label><div class="ca-sync-date-info"><span id="ca-sync-today"></span><span>\u00daltima sincronizaci\u00f3n exitosa: indicador superior.</span></div><button type="button" id="ca-sync" class="ca-secondary">Buscar compras nuevas</button><p id="ca-sync-result" class="ca-sync-result" role="status" aria-live="polite"></p></div><div id="ca-metrics" class="metrics ca-metrics"></div><div class="ca-summary-grid"><section class="panel"><h3>Compras por región</h3><div id="ca-regions"></div></section><section class="panel"><h3>Últimas consultas</h3><div id="ca-recent"></div></section></div><div class="ca-tabs" role="tablist" aria-label="Compra Ágil"><button type="button" role="tab" aria-selected="true" data-ca-tab="radar">Radar</button><button type="button" role="tab" aria-selected="false" data-ca-tab="proveedores">Proveedores</button><button type="button" role="tab" aria-selected="false" data-ca-tab="evaluacion">Evaluación comercial</button></div><section data-ca-pane="radar" class="ca-pane"><div class="ca-filters"><label>Buscar<input id="ca-search" type="search" placeholder="Código, institución o nombre"></label><label>Región<select id="ca-region"><option value="">Todas las regiones</option></select></label><label>Publicación desde<input id="ca-date-from" type="date"></label><label>Publicación hasta<input id="ca-date-to" type="date"></label><label>Monto mínimo CLP<input id="ca-min-amount" type="number" min="0" inputmode="numeric"></label><label>Monto máximo CLP<input id="ca-max-amount" type="number" min="0" inputmode="numeric"></label><label class="ca-current-filter"><input id="ca-only-current" type="checkbox"> Solo oportunidades vigentes</label><label>Seguimiento<select id="ca-tracking-filter"><option value="">Todas</option><option value="parcial">Cobertura parcial</option><option value="pendientes">Productos pendientes</option><option value="sin_detalle">Falta consultar detalle</option></select></label><label>Ordenar por<select id="ca-sort"><option value="fecha_publicacion">Fecha de publicación</option><option value="fecha_cierre">Fecha de cierre</option><option value="monto_estimado">Monto estimado</option><option value="nombre">Nombre</option></select></label><label>Dirección<select id="ca-direction"><option value="desc">Descendente</option><option value="asc">Ascendente</option></select></label></div><section id="ca-review-panel" class="ca-review-panel" aria-label="Oportunidades para revisar" hidden><div class="ca-review-heading"><div><h3>Oportunidades para revisar <span id="ca-review-count">0</span></h3><p>Señales orientativas detectadas en esta página o en detalles ya consultados. Estas compras siguen en el Radar y tú decides si cotizar.</p></div></div><div id="ca-review-list" class="ca-review-list"></div></section><div class="ca-table-wrap ca-radar-table-wrap"><div id="ca-radar-loading" class="ca-radar-loading" role="status" aria-live="polite" hidden></div><table class="ca-table"><thead><tr><th>Institución</th><th>Compra</th><th>Código</th><th>Región</th><th>Monto estimado</th><th>Cierre</th><th>Estado</th><th>Acción</th></tr></thead><tbody id="ca-opportunity-rows"></tbody></table></div><div class="ca-pagination"><button type="button" id="ca-prev" class="ca-secondary">Anterior</button><span id="ca-page-label"></span><button type="button" id="ca-next" class="ca-secondary">Siguiente</button></div></section><section data-ca-pane="proveedores" class="ca-pane" hidden><div class="ca-supplier-controls"><label>Buscar por código o nombre<input id="ca-supplier-search" type="search" placeholder="Código o nombre del artículo"></label><label>Proveedor<select id="ca-supplier-filter"><option value="">Todos</option><option value="cone">CONE</option><option value="herbanatura">Herbanatura</option></select></label><button type="button" id="ca-supplier-refresh" class="ca-secondary">Buscar</button></div><p class="ca-stock-note">Los datos de disponibilidad pertenecen al proveedor; no representan inventario propio de Trovofarma Store.</p><div id="ca-supplier-list" class="ca-supplier-grid"></div><section class="panel ca-import-panel"><h3>Importar catalogo para revision</h3><p>CSV normalizado. La vista previa no guarda datos. Los registros conservan proveedor, precio, IVA y stock sin confirmar, y mantienen codigos repetidos.</p><label>Archivo CSV<input id="ca-import-file" type="file" accept=".csv,text/csv"></label><button type="button" id="ca-import-preview" class="ca-secondary">Ver vista previa</button><div id="ca-import-metrics" class="ca-import-metrics"></div><p id="ca-import-status" role="status"></p><button type="button" id="ca-import-save" class="ca-secondary" disabled>Guardar en revision privada</button><h3>Catalogos en revision privada</h3><button type="button" id="ca-import-review-refresh" class="ca-secondary">Actualizar revisiones</button><div id="ca-import-review"></div></section></section><section data-ca-pane="evaluacion" class="ca-pane" hidden><div class="ca-evaluation-intro"><h3>Evaluación comercial</h3><p>El análisis se mantiene pendiente hasta contar con equivalencias técnicas y costos verificados.</p></div><div class="ca-evaluation-grid">${['Costo neto','IVA','Descuentos','Transporte','Capital necesario','Margen','Utilidad estimada'].map(label=>`<article><span>${label}</span><strong>Pendiente</strong></article>`).join('')}</div><p class="ca-warning">No se calculan valores ni se asume equivalencia de productos automáticamente. La evaluación y la preparación de ofertas son manuales.</p><section id="ca-manual-prep" class="panel ca-manual-prep" hidden></section></section></div><section id="ca-detail-panel" class="panel ca-detail-panel ca-full-page-view" hidden></section><div class="ca-account"><span id="ca-account-label"></span><button type="button" id="ca-signout" class="ca-link-button">Cerrar sesión</button></div></div></section></div>`;
  const config=dashboardConfig();if(!config){caRenderLogin('Configuración incompleta: completa supabase-config.js con URL y clave pública sb_publishable_.');return;}
  if(!cresceDashboardAuthSubscription)cresceDashboardAuthSubscription=config.auth.onAuthStateChange(caHandleAuthStateChange).data.subscription;
  if(location.hash.includes('access_token=')||location.hash.includes('error_description=')){const params=new URLSearchParams(location.hash.slice(location.hash.indexOf('#')+1));if(params.get('type')==='recovery')caRenderNewPassword();else if(params.has('error_description'))caRenderLogin('El enlace no es válido o venció. Solicita uno nuevo para recuperar tu contraseña.');}else if(caAuthMode==='recovery'||caAuthMode==='new-password')caRenderLogin();
@@ -547,6 +598,7 @@ function caBuildDashboard(){
  document.getElementById('ca-prev').addEventListener('click',()=>{cresceDashboardState.page=Math.max(1,cresceDashboardState.page-1);caLoadOpportunities().catch(error=>caSetStatus(error.message,'error'));});
  document.getElementById('ca-next').addEventListener('click',()=>{cresceDashboardState.page++;caLoadOpportunities().catch(error=>caSetStatus(error.message,'error'));});
  document.getElementById('ca-supplier-refresh').addEventListener('click',()=>caLoadSuppliers());caPrivateImportSetup();document.getElementById('ca-supplier-search').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();caLoadSuppliers();}});document.getElementById('ca-supplier-filter').addEventListener('change',()=>caLoadSuppliers());
+ if(caRadarStatusTimer)clearInterval(caRadarStatusTimer);caRadarStatusTimer=setInterval(caUpdateRadarTimeStatuses,60000);
  caLoadPrivate().catch(()=>caRenderLogin('No se pudo validar la sesion. Inicia sesion nuevamente.'));
  document.title='Compra Ágil · Trovofarma Store | CRESCE';
 }
