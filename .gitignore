@@ -1,0 +1,39 @@
+# CRESCE — evitar subir credenciales y archivos comerciales.
+# Esto previene nuevos commits, pero NO elimina secretos ya publicados.
+
+# Credenciales y configuracion local
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+*service_role*
+*service-role*
+*credentials*.json
+*secrets*.json
+
+# Herramientas y caches locales
+node_modules/
+.vercel/
+supabase/.branches/
+supabase/.temp/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
+# Datos comerciales no versionables
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.zip
+*.rar
+backups/
+exports/
+datos-privados/
