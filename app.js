@@ -628,6 +628,7 @@ function home(){
       let distance=(i-selected+slides.length)%slides.length;
       if(distance>slides.length/2)distance-=slides.length;
       card.style.setProperty('--offset',distance);
+      card.style.setProperty('--slide-scale',Math.max(.73,1-Math.abs(distance)*.12));
       card.classList.toggle('is-selected',i===selected);
       card.tabIndex=i===selected?0:-1;
       if(i===selected)card.setAttribute('aria-current','true');else card.removeAttribute('aria-current');
