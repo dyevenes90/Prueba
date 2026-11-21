@@ -606,102 +606,66 @@ function home(){
   holdingCarouselController?.abort();
   holdingCarouselController=new AbortController();
   const {signal}=holdingCarouselController;
-  let selected=0,paintedSelection=-1,position=0,drag=null,suppressClickUntil=0,lastFrame=0,inertia=0,hovering=false,focused=false,carouselFrame=0;
+  let angle=0,drag=null,lastFrame=0,velocity=0,hovering=false,focused=false,frame=0,suppressClickUntil=0;
   const motion=matchMedia('(prefers-reduced-motion: reduce)');
-  motion.addEventListener?.('change',()=>{if(motion.matches)inertia=0;},{signal});
   const target=area=>area.id==='trovofarma'?'#trovofarma/compra-agil':'#'+area.id+'/resumen';
   main.innerHTML=`<h1 class="sr-only">CRESCE Holding</h1><section class="cresce-holding" aria-label="Empresas de CRESCE">
     <div class="cresce-holding-stage">
-      <div class="cresce-holding-mark"><img src="assets/logos/cresce-logo.webp" alt="CRESCE" width="400" height="400" fetchpriority="high"></div>
-      <div class="cresce-holding-rail" role="group" aria-label="Empresas del holding" tabindex="0">
-        ${areas.map((a,i)=>`<a href="${target(a)}" class="cresce-holding-slide" data-slide="${i}" aria-label="Abrir ${a.name}" title="${a.name}"><img src="${a.logo}" alt="" loading="eager" decoding="async"></a>`).join('')}
+      <div class="cresce-holding-orbit" role="group" aria-label="Empresas del holding" tabindex="0">
+        ${areas.map((a,i)=>`<a href="${target(a)}" class="cresce-holding-book" data-book="${i}" aria-label="Abrir ${a.name}" title="${a.name}"><span class="cresce-holding-book-face"><img src="${a.logo}" alt="" loading="eager" decoding="async"><span class="cresce-holding-book-name">${a.name}</span></span></a>`).join('')}
       </div>
-      <nav class="cresce-holding-navigation" aria-label="Cambiar empresa">
+      <div class="cresce-holding-mark"><img src="assets/logos/cresce-logo.webp" alt="CRESCE" width="400" height="400" fetchpriority="high"></div>
+      <a class="cresce-holding-cta" href="#trovofarma/compra-agil">Entrar a Compra Ágil</a>
+      <nav class="cresce-holding-navigation" aria-label="Rotación del carrusel">
         <button type="button" data-step="-1" aria-label="Empresa anterior"><span aria-hidden="true">&larr;</span></button>
-        <span class="cresce-holding-count" aria-live="polite">01 / 04</span>
         <button type="button" data-step="1" aria-label="Empresa siguiente"><span aria-hidden="true">&rarr;</span></button>
       </nav>
     </div>
   </section>`;
-  const rail=main.querySelector('.cresce-holding-rail'),slides=[...main.querySelectorAll('.cresce-holding-slide')];
-  const count=main.querySelector('.cresce-holding-count'),stage=main.querySelector('.cresce-holding');
-
-  const spread=()=>parseFloat(getComputedStyle(rail).getPropertyValue('--spread'))||198;
-  let heightRatio=.155;
-  const updateHeightRatio=()=>{const compact=matchMedia('(max-width:640px)').matches;const tablet=matchMedia('(max-width:950px)').matches;heightRatio=compact?35/240:tablet?36/270:45/290;};
-  updateHeightRatio();window.addEventListener('resize',updateHeightRatio,{signal});
-
+  const orbit=main.querySelector('.cresce-holding-orbit'),books=[...main.querySelectorAll('.cresce-holding-book')],stage=main.querySelector('.cresce-holding');
   function paint(){
-    position=((position%slides.length)+slides.length)%slides.length;
-    selected=(Math.round(position)%slides.length+slides.length)%slides.length;
-    slides.forEach((card,i)=>{
-      let distance=(i-position+slides.length*4)%slides.length;
-      if(distance>slides.length/2)distance-=slides.length;
-      card.style.setProperty('--offset',distance);
-      card.style.setProperty('--drag-x',(drag?.delta||0)+'px');
-      card.style.setProperty('--curve-y',Math.abs(distance)*18+'px');
-      card.style.setProperty('--tilt',distance*-2.1+'deg');
-      card.style.setProperty('--height-scale',(1+Math.min(1,Math.abs(distance))*heightRatio).toFixed(3));
-      const layer=String(10-Math.abs(distance));if(card.style.zIndex!==layer)card.style.zIndex=layer;
-      if(card.classList.contains('is-selected')!==(i===selected))card.classList.toggle('is-selected');
-      const tabIndex=i===selected?0:-1;if(card.tabIndex!==tabIndex)card.tabIndex=tabIndex;
-      card.style.opacity=String(Math.max(0,Math.min(1,(1.95-Math.abs(distance))/.35)));
-      const current=i===selected?'true':'false';if(card.getAttribute('aria-current')!==current)card.setAttribute('aria-current',current);
+    const compact=matchMedia('(max-width:640px)').matches,tablet=matchMedia('(max-width:950px)').matches;
+    const rx=compact?Math.min(145,stage.clientWidth*.35):tablet?Math.min(270,stage.clientWidth*.34):Math.min(430,stage.clientWidth*.34);
+    const ry=compact?Math.min(206,Math.max(150,stage.clientHeight*.48-112)):tablet?Math.min(216,Math.max(190,stage.clientHeight*.48-112)):Math.min(264,stage.clientHeight*.3);
+    books.forEach((book,i)=>{
+      const radians=(i*Math.PI*2/books.length+angle+Math.PI/4),x=Math.cos(radians)*rx,y=Math.sin(radians)*ry;
+      book.style.setProperty('--book-x',`${x}px`);book.style.setProperty('--book-y',`${y}px`);
+      book.style.setProperty('--book-tilt',`${Math.cos(radians)*7}deg`);
+      book.style.zIndex=String(Math.round(20+Math.sin(radians)*10));
     });
-    if(paintedSelection!==selected){count.textContent=String(selected+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');paintedSelection=selected;}
   }
-  function show(index,focus=false){
-    const next=(index+slides.length)%slides.length;
-    let delta=(next-position)%slides.length;
-    if(delta>slides.length/2)delta-=slides.length;
-    if(delta< -slides.length/2)delta+=slides.length;
-    position+=delta;inertia=0;paint();
-    if(focus)slides[next].focus({preventScroll:true});
-  }
-  slides.forEach(card=>card.addEventListener('click',event=>{
-    if(Date.now()<suppressClickUntil){event.preventDefault();event.stopPropagation();}
-  },{signal}));
-  main.querySelectorAll('[data-step]').forEach(button=>button.addEventListener('click',()=>show(selected+Number(button.dataset.step),true),{signal}));
-  stage.addEventListener('keydown',event=>{
-    if(event.key==='ArrowRight'||event.key==='ArrowLeft'){event.preventDefault();show(selected+(event.key==='ArrowRight'?1:-1),true);}
-  },{signal});
+  function step(direction){angle+=direction*Math.PI/2;velocity=0;paint();}
+  main.querySelectorAll('[data-step]').forEach(button=>button.addEventListener('click',()=>step(Number(button.dataset.step)),{signal}));
+  orbit.addEventListener('keydown',event=>{if(event.key==='ArrowRight'||event.key==='ArrowDown'){event.preventDefault();step(1);}else if(event.key==='ArrowLeft'||event.key==='ArrowUp'){event.preventDefault();step(-1);}},{signal});
   stage.addEventListener('pointerenter',()=>{hovering=true;},{signal});
   stage.addEventListener('pointerleave',()=>{hovering=false;},{signal});
   stage.addEventListener('focusin',()=>{focused=true;},{signal});
   stage.addEventListener('focusout',event=>{if(!stage.contains(event.relatedTarget))focused=false;},{signal});
-  rail.addEventListener('pointerdown',event=>{
+  orbit.addEventListener('pointerdown',event=>{
     if(event.isPrimary===false||(event.pointerType==='mouse'&&event.button!==0))return;
-    drag={id:event.pointerId,start:event.clientX,lastX:event.clientX,lastT:performance.now(),velocity:0,moved:false,delta:0};
-    inertia=0;rail.classList.add('is-dragging');rail.setPointerCapture?.(event.pointerId);
+    drag={id:event.pointerId,startX:event.clientX,startY:event.clientY,lastX:event.clientX,lastTime:performance.now(),moved:false};velocity=0;orbit.classList.add('is-dragging');
   },{signal});
   window.addEventListener('pointermove',event=>{
     if(!drag||event.pointerId!==drag.id)return;
-    const now=performance.now(),delta=event.clientX-drag.start,dt=Math.max(1,now-drag.lastT);
-    if(Math.abs(delta)>5)drag.moved=true;
-    drag.velocity=(event.clientX-drag.lastX)/dt;drag.lastX=event.clientX;drag.lastT=now;drag.delta=delta;paint();
+    const now=performance.now(),dx=event.clientX-drag.lastX,dt=Math.max(1,now-drag.lastTime),width=Math.max(240,orbit.clientWidth);
+    if(Math.hypot(event.clientX-drag.startX,event.clientY-drag.startY)>7)drag.moved=true;
+    angle+=dx/width*Math.PI*2;velocity=dx/dt/width*Math.PI*2;drag.lastX=event.clientX;drag.lastTime=now;paint();
   },{signal});
-  window.addEventListener('pointerup',event=>{
-    if(!drag||event.pointerId!==drag.id)return;
-    const delta=event.clientX-drag.start,moved=drag.moved,velocity=drag.velocity;drag=null;rail.classList.remove('is-dragging');
-    if(moved){position-=delta/spread();inertia=motion.matches?0:Math.max(-1.1,Math.min(1.1,-velocity*1000/spread()));suppressClickUntil=Date.now()+450;}
-    paint();
-  },{signal});
-  window.addEventListener('pointercancel',event=>{
-    if(!drag||event.pointerId!==drag.id)return;
-    drag=null;rail.classList.remove('is-dragging');suppressClickUntil=Date.now()+250;paint();
-  },{signal});
-  paint();
+  const finishDrag=event=>{if(!drag||event.pointerId!==drag.id)return;const moved=drag.moved;drag=null;orbit.classList.remove('is-dragging');if(moved)suppressClickUntil=Date.now()+350;};
+  window.addEventListener('pointerup',finishDrag,{signal});window.addEventListener('pointercancel',finishDrag,{signal});
+  books.forEach(book=>book.addEventListener('click',event=>{if(Date.now()<suppressClickUntil){event.preventDefault();event.stopPropagation();}},{signal}));
+  window.addEventListener('resize',paint,{signal});paint();
   const animate=now=>{
-    if(!main.contains(rail)||signal.aborted)return;
-    if(lastFrame){const dt=Math.min(48,now-lastFrame)/1000;
-      if(inertia){position+=inertia*dt;inertia*=Math.exp(-5.5*dt);if(Math.abs(inertia)<.025)inertia=0;}
-      else if(!motion.matches&&!hovering&&!focused&&!drag)position+=30*dt/spread();
-      paint();
+    frame=0;if(!main.contains(orbit)||signal.aborted||motion.matches)return;
+    if(lastFrame){const dt=Math.min(50,now-lastFrame)/1000;
+      if(velocity&&!drag){angle+=velocity*dt;velocity*=Math.exp(-5*dt);if(Math.abs(velocity)<.002)velocity=0;paint();}
+      else if(!hovering&&!focused&&!drag){angle+=dt*.12;paint();}
     }
-    lastFrame=now;carouselFrame=requestAnimationFrame(animate);
+    lastFrame=now;frame=requestAnimationFrame(animate);
   };
-  carouselFrame=requestAnimationFrame(animate);
-  signal.addEventListener('abort',()=>cancelAnimationFrame(carouselFrame),{once:true});
+  const startAnimation=()=>{if(!motion.matches&&!frame){lastFrame=0;frame=requestAnimationFrame(animate);}};
+  motion.addEventListener?.('change',()=>{velocity=0;if(motion.matches){cancelAnimationFrame(frame);frame=0;}else startAnimation();},{signal});
+  startAnimation();signal.addEventListener('abort',()=>cancelAnimationFrame(frame),{once:true});
   document.title='CRESCE | Holding';
 }
 function workspace(area, module){
