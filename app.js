@@ -612,7 +612,6 @@ function home(){
       <div class="cresce-holding-orbit" role="group" aria-label="Empresas del holding">
         ${areas.map((a,i)=>`<a href="${target(a)}" class="cresce-holding-book" data-book="${i}" aria-label="Abrir ${a.name}" title="${a.name}"><span class="cresce-holding-book-face"><img src="${a.logo}" alt="" loading="eager" decoding="async"><span class="cresce-holding-book-name">${a.name}</span></span></a>`).join('')}
       </div>
-      <div class="cresce-holding-mark"><img src="assets/logos/cresce-logo.webp" alt="CRESCE" width="400" height="400" fetchpriority="high"></div>
       <a class="cresce-holding-cta" href="#trovofarma/compra-agil">Entrar a Compra Ágil</a>
     </div>
   </section>`;
