@@ -737,12 +737,14 @@ function home(){
  ring.addEventListener('pointercancel',()=>{pointerStart=null;dragging=false;});
  ring.addEventListener('click',event=>{if(dragging){event.preventDefault();event.stopPropagation();}},true);
  // Actualizar pestañas ocultas sin saltos de fase.
- document.addEventListener('visibilitychange',()=>{lastTick=0;},{signal:undefined});
+ const onVisibility=()=>{lastTick=0;};
+ document.addEventListener('visibilitychange',onVisibility);
  const onResize=()=>resize();
  window.addEventListener('resize',onResize);
  function stop(){
   alive=false;cancelAnimationFrame(frame);
   window.removeEventListener('resize',onResize);
+  document.removeEventListener('visibilitychange',onVisibility);
   window.removeEventListener('hashchange',stop);
  }
  window.addEventListener('hashchange',stop,{once:true});
