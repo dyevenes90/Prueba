@@ -5,6 +5,7 @@ const areas = [
  {id:'proyectos',logo:'assets/logos/Gestion de proyectos.png',name:'Gestión de Proyectos',icon:'projects',ink:'#586c99',tint:'#edf0f9',description:'Transforma antecedentes e ideas en proyectos con dirección, seguimiento y próximos pasos claros.',tags:['Planificación','Antecedentes','Seguimiento'],modules:['Resumen','Proyectos activos','Banco Integrado / antecedentes','Seguimiento','Finanzas','Laboratorio de ideas','Automatizaciones IA','Configuración'],examples:['Ordenar antecedentes del proyecto','Revisar próximo hito de entrega','Preparar evaluación de una iniciativa']},
  {id:'strongroot',logo:'assets/logos/Logo Strongroot.png',name:'StrongRoot',icon:'root',ink:'#657543',tint:'#eff2e3',description:'Cultiva una visión completa de tu operación: producción, recursos y tecnología trabajando juntos.',tags:['Agro','Producción','Tecnología'],modules:['Resumen','Frambuesas','Riego / sensores','Invernaderos','Pellet','Cámara de frío','Finanzas','Compra Ágil','Laboratorio de ideas','Automatizaciones IA','Configuración'],examples:['Revisar programación de riego','Planificar labores en frambuesas','Verificar capacidad de cámara de frío']}
 ];
+let holdingCarouselController = null;
 const moduleContent = {
  'Ventas':['Organiza ventas y oportunidades de seguimiento.',['Venta de muestra · Pedido 001','Oportunidad · Cliente recurrente','Seguimiento · Cotización enviada']],
  'Compras':['Planifica el abastecimiento y centraliza tus proveedores.',['Solicitud de reposición','Comparación de proveedores','Orden de compra de muestra']],
@@ -602,49 +603,105 @@ function caBuildDashboard(){
  document.title='Compra Ágil · Trovofarma Store | CRESCE';
 }
 function home(){
-  let selected=0;
+  holdingCarouselController?.abort();
+  holdingCarouselController=new AbortController();
+  const {signal}=holdingCarouselController;
+  let selected=0,paintedSelection=-1,position=0,drag=null,suppressClickUntil=0,lastFrame=0,inertia=0,hovering=false,focused=false,carouselFrame=0;
+  const motion=matchMedia('(prefers-reduced-motion: reduce)');
+  motion.addEventListener?.('change',()=>{if(motion.matches)inertia=0;},{signal});
   const target=area=>area.id==='trovofarma'?'#trovofarma/compra-agil':'#'+area.id+'/resumen';
   main.innerHTML=`<h1 class="sr-only">CRESCE Holding</h1><section class="cresce-holding" aria-label="Empresas de CRESCE">
     <div class="cresce-holding-stage">
-      <div class="cresce-holding-mark"><img src="assets/logos/cresce-logo.webp" alt="CRESCE" width="400" height="400"><span class="cresce-mark-fallback">CRESCE</span></div>
-      <div class="cresce-holding-rail">
+      <div class="cresce-holding-mark"><img src="assets/logos/cresce-logo.webp" alt="CRESCE" width="400" height="400" fetchpriority="high"></div>
+      <div class="cresce-holding-rail" role="group" aria-label="Empresas del holding" tabindex="0">
         ${areas.map((a,i)=>`<a href="${target(a)}" class="cresce-holding-slide" data-slide="${i}" aria-label="Abrir ${a.name}" title="${a.name}"><img src="${a.logo}" alt="" loading="eager" decoding="async"></a>`).join('')}
       </div>
       <nav class="cresce-holding-navigation" aria-label="Cambiar empresa">
-        <button type="button" data-step="-1" aria-label="Empresa anterior">←</button>
+        <button type="button" data-step="-1" aria-label="Empresa anterior"><span aria-hidden="true">&larr;</span></button>
         <span class="cresce-holding-count" aria-live="polite">01 / 04</span>
-        <button type="button" data-step="1" aria-label="Empresa siguiente">→</button>
+        <button type="button" data-step="1" aria-label="Empresa siguiente"><span aria-hidden="true">&rarr;</span></button>
       </nav>
     </div>
   </section>`;
-  const rail=main.querySelector('.cresce-holding-rail');
-  const slides=[...rail.querySelectorAll('[data-slide]')];
-  const count=main.querySelector('.cresce-holding-count');
-  const emblem=main.querySelector('.cresce-holding-mark img');
-  emblem.addEventListener('error',()=>emblem.hidden=true);
-  function show(index,focus=false){
-    selected=(index+slides.length)%slides.length;
+  const rail=main.querySelector('.cresce-holding-rail'),slides=[...main.querySelectorAll('.cresce-holding-slide')];
+  const count=main.querySelector('.cresce-holding-count'),stage=main.querySelector('.cresce-holding');
+
+  const spread=()=>parseFloat(getComputedStyle(rail).getPropertyValue('--spread'))||198;
+  let heightRatio=.155;
+  const updateHeightRatio=()=>{const compact=matchMedia('(max-width:640px)').matches;const tablet=matchMedia('(max-width:950px)').matches;heightRatio=compact?35/240:tablet?36/270:45/290;};
+  updateHeightRatio();window.addEventListener('resize',updateHeightRatio,{signal});
+
+  function paint(){
+    position=((position%slides.length)+slides.length)%slides.length;
+    selected=(Math.round(position)%slides.length+slides.length)%slides.length;
     slides.forEach((card,i)=>{
-      let distance=(i-selected+slides.length)%slides.length;
+      let distance=(i-position+slides.length*4)%slides.length;
       if(distance>slides.length/2)distance-=slides.length;
       card.style.setProperty('--offset',distance);
-      card.style.setProperty('--slide-scale',Math.max(.73,1-Math.abs(distance)*.12));
-      card.classList.toggle('is-selected',i===selected);
-      card.tabIndex=i===selected?0:-1;
-      if(i===selected)card.setAttribute('aria-current','true');else card.removeAttribute('aria-current');
+      card.style.setProperty('--drag-x',(drag?.delta||0)+'px');
+      card.style.setProperty('--curve-y',Math.abs(distance)*18+'px');
+      card.style.setProperty('--tilt',distance*-2.1+'deg');
+      card.style.setProperty('--height-scale',(1+Math.min(1,Math.abs(distance))*heightRatio).toFixed(3));
+      const layer=String(10-Math.abs(distance));if(card.style.zIndex!==layer)card.style.zIndex=layer;
+      if(card.classList.contains('is-selected')!==(i===selected))card.classList.toggle('is-selected');
+      const tabIndex=i===selected?0:-1;if(card.tabIndex!==tabIndex)card.tabIndex=tabIndex;
+      card.style.opacity=String(Math.max(0,Math.min(1,(1.95-Math.abs(distance))/.35)));
+      const current=i===selected?'true':'false';if(card.getAttribute('aria-current')!==current)card.setAttribute('aria-current',current);
     });
-    count.textContent=String(selected+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');
-    if(focus)slides[selected].focus({preventScroll:true});
+    if(paintedSelection!==selected){count.textContent=String(selected+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');paintedSelection=selected;}
   }
-  slides.forEach((card,i)=>card.addEventListener('click',event=>{if(i!==selected){event.preventDefault();show(i,true);}}));
-  main.querySelectorAll('[data-step]').forEach(button=>button.addEventListener('click',()=>show(selected+Number(button.dataset.step),true)));
-  main.querySelector('.cresce-holding').addEventListener('keydown',event=>{
+  function show(index,focus=false){
+    const next=(index+slides.length)%slides.length;
+    let delta=(next-position)%slides.length;
+    if(delta>slides.length/2)delta-=slides.length;
+    if(delta< -slides.length/2)delta+=slides.length;
+    position+=delta;inertia=0;paint();
+    if(focus)slides[next].focus({preventScroll:true});
+  }
+  slides.forEach(card=>card.addEventListener('click',event=>{
+    if(Date.now()<suppressClickUntil){event.preventDefault();event.stopPropagation();}
+  },{signal}));
+  main.querySelectorAll('[data-step]').forEach(button=>button.addEventListener('click',()=>show(selected+Number(button.dataset.step),true),{signal}));
+  stage.addEventListener('keydown',event=>{
     if(event.key==='ArrowRight'||event.key==='ArrowLeft'){event.preventDefault();show(selected+(event.key==='ArrowRight'?1:-1),true);}
-  });
-  let touchX=null;
-  rail.addEventListener('touchstart',event=>{touchX=event.touches[0]?.clientX??null;},{passive:true});
-  rail.addEventListener('touchend',event=>{if(touchX===null)return;const distance=(event.changedTouches[0]?.clientX??touchX)-touchX;touchX=null;if(Math.abs(distance)>55)show(selected+(distance<0?1:-1));},{passive:true});
-  show(0);
+  },{signal});
+  stage.addEventListener('pointerenter',()=>{hovering=true;},{signal});
+  stage.addEventListener('pointerleave',()=>{hovering=false;},{signal});
+  stage.addEventListener('focusin',()=>{focused=true;},{signal});
+  stage.addEventListener('focusout',event=>{if(!stage.contains(event.relatedTarget))focused=false;},{signal});
+  rail.addEventListener('pointerdown',event=>{
+    if(event.isPrimary===false||(event.pointerType==='mouse'&&event.button!==0))return;
+    drag={id:event.pointerId,start:event.clientX,lastX:event.clientX,lastT:performance.now(),velocity:0,moved:false,delta:0};
+    inertia=0;rail.classList.add('is-dragging');rail.setPointerCapture?.(event.pointerId);
+  },{signal});
+  window.addEventListener('pointermove',event=>{
+    if(!drag||event.pointerId!==drag.id)return;
+    const now=performance.now(),delta=event.clientX-drag.start,dt=Math.max(1,now-drag.lastT);
+    if(Math.abs(delta)>5)drag.moved=true;
+    drag.velocity=(event.clientX-drag.lastX)/dt;drag.lastX=event.clientX;drag.lastT=now;drag.delta=delta;paint();
+  },{signal});
+  window.addEventListener('pointerup',event=>{
+    if(!drag||event.pointerId!==drag.id)return;
+    const delta=event.clientX-drag.start,moved=drag.moved,velocity=drag.velocity;drag=null;rail.classList.remove('is-dragging');
+    if(moved){position-=delta/spread();inertia=motion.matches?0:Math.max(-1.1,Math.min(1.1,-velocity*1000/spread()));suppressClickUntil=Date.now()+450;}
+    paint();
+  },{signal});
+  window.addEventListener('pointercancel',event=>{
+    if(!drag||event.pointerId!==drag.id)return;
+    drag=null;rail.classList.remove('is-dragging');suppressClickUntil=Date.now()+250;paint();
+  },{signal});
+  paint();
+  const animate=now=>{
+    if(!main.contains(rail)||signal.aborted)return;
+    if(lastFrame){const dt=Math.min(48,now-lastFrame)/1000;
+      if(inertia){position+=inertia*dt;inertia*=Math.exp(-5.5*dt);if(Math.abs(inertia)<.025)inertia=0;}
+      else if(!motion.matches&&!hovering&&!focused&&!drag)position+=30*dt/spread();
+      paint();
+    }
+    lastFrame=now;carouselFrame=requestAnimationFrame(animate);
+  };
+  carouselFrame=requestAnimationFrame(animate);
+  signal.addEventListener('abort',()=>cancelAnimationFrame(carouselFrame),{once:true});
   document.title='CRESCE | Holding';
 }
 function workspace(area, module){
@@ -657,7 +714,7 @@ function workspace(area, module){
 function render(){
  const [areaId,moduleId] = location.hash.slice(1).split('/');
  const area=areas.find(a=>a.id===areaId);
- if(area){const module=area.modules.find(m=>slug(m)===moduleId)||(area.id==='trovofarma'?'Compra Ágil':'Resumen');workspace(area,module);}
+ if(area){holdingCarouselController?.abort();holdingCarouselController=null;const module=area.modules.find(m=>slug(m)===moduleId)||(area.id==='trovofarma'?'Compra Ágil':'Resumen');workspace(area,module);}
  else home();
  window.scrollTo(0,0);
  const heading=main.querySelector('h1');

@@ -5,7 +5,7 @@
 ## Acuerdo de diseño
 - Dos capas: **Holding** (impacto visual) y **Operaciones** (velocidad, lectura y filtros).
 - Referencia estética: VHS Archive de MotionSites, reinterpretada como galería propia de cuatro empresas, sin reproducir sus recursos visuales o textos.
-- Paleta: carbón, grafito, bronce, oro envejecido, marfil. Sin subtítulos ni textos de demostración; solo logos en el selector principal.
+- Paleta: marfil #F6F4EE, texto #121212, bronce #B28A57 y lineas #D8CFBF; portada clara, sin fondo negro dominante.
 - Trovofarma accede directamente a Compra Ágil; sidebar con módulos se conserva para futuras funcionalidades.
 - Módulos sin integración ya no exhiben estadísticas, listas o prioridades ficticias.
 - Navbar con accesos de logos solamente, notificaciones de demostración ocultas, botón refrescar compacto.
@@ -16,7 +16,12 @@
 - Respetar `prefers-reduced-motion`; sin animaciones pesadas, sin dependencias nuevas, sin IA nueva ni cobros.
 
 ## Requisito para terminar
-Agregar el logo original proporcionado por el usuario en `assets/logos/cresce-logo.webp` dentro de esta rama. Existe una versión WEBP optimizada entregada en esta conversación. Mientras no esté, la portada muestra el texto CRESCE como respaldo.
+El logo original del usuario esta agregado en `assets/logos/cresce-logo.webp`.
+
+## Implementacion visual
+- Direccion clara: hero crema, marca protagonista y tarjetas verticales con arco.
+- Carrusel con flechas, teclado, click y arrastre por Pointer Events; respeta `prefers-reduced-motion`.
+- Pendiente: comprobar visualmente el Preview de Vercel antes de fusionar.
 
 ## Pruebas obligatorias de Preview
 1. Home: logos de cuatro empresas y selección flechas/clic/foco con teclado; navegación Trovofarma a Compra Ágil.
@@ -29,3 +34,10 @@ Agregar el logo original proporcionado por el usuario en `assets/logos/cresce-lo
 ## Notas
 - Solo se modifican `index.html`, `styles.css` y `app.js`, además de este documento. No modifica Supabase, secretos, RLS ni base de datos.
 - La función de sincronización conserva ventanas y checkpoints previos. Automatizar la ingestión completa y continua es una **tarea funcional posterior**, no una transformación cosmética.
+
+## Refinamiento visual CRESCE 2.0
+- Se usa el archivo original `assets/logos/cresce-logo.webp` sin modificaciones; su SHA-256 coincide con el archivo entregado.
+- La portada tiene una barra limpia de 68 px, el emblema de 240 px y las cuatro tarjetas verticales originales.
+- El carrusel utiliza Pointer Events nativos, animación con `requestAnimationFrame` a 30 px/s, inercia breve, navegación directa por tarjeta, flechas y teclado; pausa al pasar el puntero o recibir foco. `prefers-reduced-motion` desactiva el autoavance y la inercia.
+- Tarjetas: 170 × 290 px en escritorio con lados más altos, 155 px en tablet y 120–150 px en móvil.
+- La prueba visual/funcional con navegador quedó bloqueada localmente: el entorno negó el socket del servidor local y el inicio de Chrome headless. La Preview de Vercel aún necesita revisión visual.
