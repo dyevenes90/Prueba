@@ -606,10 +606,157 @@ function caBuildDashboard(){
  caLoadPrivate().catch(()=>caRenderLogin('No se pudo validar la sesion. Inicia sesion nuevamente.'));
  document.title='Compra Ágil · Trovofarma Store | CRESCE';
 }
+
 function home(){
- main.innerHTML = `<h1 class="sr-only">Áreas de trabajo</h1><div class="area-grid">${areas.map(a=>`<article class="area-card" style="--ink:${a.ink}"><div class="card-top">${icon(a)}</div><h2>${a.name}</h2><p>${a.description}</p><div class="tags">${a.tags.map(t=>`<span>${t}</span>`).join('')}</div><a class="enter" href="#${a.id}/resumen" aria-label="Entrar a ${a.name}">Entrar <span aria-hidden="true">↗</span></a></article>`).join('')}</div>`;
- document.title='CRESCE';
+ // Vista exclusivamente visual: la logica del Radar y todos los modulos permanece en workspace()/caBuildDashboard().
+ const escapeText=value=>String(value).replace(/[&<>"']/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+ const destination=area=>area.id==='trovofarma'?'#trovofarma/compra-agil':'#'+area.id+'/resumen';
+ const menu=areas.map(a=>'<a href="'+destination(a)+'">'+escapeText(a.name==='La Casa del Filo'?'Casa del Filo':a.name==='Gestión de Proyectos'?'Proyectos':a.name==='Trovofarma Store'?'Trovofarma':a.name)+'</a>').join('');
+ // 37 tarjetas crean la misma perspectiva interior de cilindro de la referencia.
+ // No son 37 negocios: son 37 representaciones decorativas de 4 empresas reales.
+ const cards=Array.from({length:37},(_,i)=>{
+  const area=areas[i%areas.length];
+  const ink=['#10426c','#9c713b','#344d51','#34543d'][i%4];
+  const tag=['COMERCIO','SERVICIOS','PROYECTOS','PRODUCCION'][i%4];
+  return '<a class="vc-card vc-card-'+(i%4)+'" href="'+destination(area)+'" data-vc-index="'+i+'" aria-label="Abrir '+escapeText(area.name)+'" tabindex="-1" style="--vc-card-ink:'+ink+'">'
+   +'<div class="vc-card-art"><span class="vc-card-label">CRESCE / '+tag+'</span>'
+   +'<img src="'+encodeURI(area.logo)+'" alt="" decoding="async" loading="lazy">'
+   +'<span class="vc-card-name">'+escapeText(area.name)+'</span></div><span class="vc-card-edge"></span></a>';
+ }).join('');
+ main.innerHTML=[
+ '<section class="vc-stage" aria-label="CRESCE Holding">',
+ '<div class="vc-bg" aria-hidden="true"></div><div class="vc-stars vc-stars-a" aria-hidden="true"></div><div class="vc-stars vc-stars-b" aria-hidden="true"></div>',
+ '<div class="vc-canvas">',
+ '<header class="vc-nav">',
+ '<a class="vc-logo" href="#inicio" aria-label="CRESCE, inicio"><img src="assets/logos/cresce-logo.webp" alt="" width="24" height="24"><span>CRESCE</span></a>',
+ '<button class="vc-burger" type="button" aria-label="Abrir navegación" aria-expanded="false" aria-controls="vc-menu"><span></span><span></span><span></span></button>',
+ '<nav class="vc-menu" id="vc-menu" aria-label="Empresas">',
+ '<div class="vc-links">'+menu+'</div>',
+ '<a class="vc-btn vc-nav-cta" href="#trovofarma/compra-agil"><span>Compra Ágil</span></a>',
+ '</nav></header>',
+ '<div class="vc-stack">',
+ '<div class="vc-badge"><i aria-hidden="true"><img src="assets/logos/cresce-logo.webp" alt=""></i><b>CUATRO EMPRESAS · UN ESPACIO</b></div>',
+ '<h1 class="vc-title vc-title-a">TODAS TUS EMPRESAS</h1>',
+ '<h2 class="vc-title vc-title-b">CRESCE</h2>',
+ '<p class="vc-sub vc-sub-a">Trovofarma · Casa del Filo · Proyectos · StrongRoot</p>',
+ '<p class="vc-sub vc-sub-b">Un solo lugar para trabajar y decidir.</p>',
+ '<a class="vc-btn vc-hero-cta" href="#trovofarma/compra-agil"><span>Ir a Compra Ágil</span></a>',
+ '</div>',
+ '<div class="vc-showcase" aria-label="Empresas del holding">',
+ '<div class="vc-ring" role="list">'+cards+'</div>',
+ '</div>',
+ '<div class="vc-browser" aria-hidden="true">',
+ '<div class="vc-browser-chrome"><span class="vc-dots"><i></i><i></i><i></i></span>',
+ '<div class="vc-omnibox"><span>cresce / trovofarma / compra-agil</span></div>',
+ '<span class="vc-chrome-icons">◇ &nbsp; + &nbsp; ▤</span></div>',
+ '<div class="vc-browser-content"><div class="vc-app-top"><b>CRESCE</b><span>Trovofarma Store</span><em>Compra Ágil</em></div>',
+ '<div class="vc-app-body"><div class="vc-app-hero"><span>Compra Ágil</span><strong>Radar de oportunidades</strong></div>',
+ '<div class="vc-app-panels"><span>Radar</span><span>Proveedores</span><span>Evaluación comercial</span></div>',
+ '</div></div></div>',
+ '</div>',
+ '<a href="#trovofarma/compra-agil" class="vc-float" aria-label="Ir directamente a Compra Ágil"><span aria-hidden="true">↗</span></a>',
+ '</section>'
+ ].join('');
+ document.title='CRESCE | Holding';
+ const stage=main.querySelector('.vc-stage'),canvas=stage.querySelector('.vc-canvas');
+ const ring=stage.querySelector('.vc-ring'),cardsNodes=[...ring.children];
+ const menuContainer=stage.querySelector('.vc-nav'),burger=stage.querySelector('.vc-burger');
+ const reducedMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
+ let ringPhase=-2,lastTick=0,frame=0,hovering=false,focusPause=false;
+ let alive=true;
+ // Estrellas deterministas, sin imágenes externas ni llamadas de red.
+ let seed=20261121;
+ function random(){seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;}
+ for(const [selector,count,blur,fromAlpha,toAlpha] of [['.vc-stars-a',150,0,.05,.30],['.vc-stars-b',18,1.2,.35,.70]]){
+  const shadows=Array.from({length:count},()=>Math.round(random()*100)+'vw '+Math.round(random()*100)+'vh '+blur+'px 0 rgba(255,255,255,'+(fromAlpha+(toAlpha-fromAlpha)*random()).toFixed(3)+')');
+  stage.querySelector(selector).style.boxShadow=shadows.join(',');
+ }
+ const radius=891,numberOfCards=37,step=360/numberOfCards,cull=42;
+ // La camara está en el centro del anillo: las tarjetas son tangentes al cilindro y miran hacia ella.
+ function placeCards(){
+  cardsNodes.forEach((card,i)=>{
+   const angle=((i*step+ringPhase)%360+540)%360-180;
+   const visible=Math.abs(angle)<=cull;
+   card.hidden=!visible;
+   card.tabIndex=visible?0:-1;
+   if(!visible)return;
+   const radians=angle*Math.PI/180,c=Math.cos(radians);
+   card.style.transform='translate3d('+ (radius*Math.sin(radians)).toFixed(2)+'px,0,'+(radius*(1-c)).toFixed(2)+'px) rotateY('+(-angle).toFixed(2)+'deg)';
+   card.style.filter='brightness('+(0.84+0.5*(1/c-1)).toFixed(3)+')';
+  });
+ }
+ function resize(){
+  if(!alive)return;
+  const vw=window.innerWidth,vh=window.innerHeight;
+  if(vw<=700){canvas.style.removeProperty('--vc-k');canvas.style.removeProperty('--vc-fill');placeCards();return;}
+  // Ley de escala del prompt: k=min(vw/W,vh/560), con rampa tablet 701–1080px.
+  const narrow=vw<=1080;
+  let W=narrow?920+(vw-701)*(1172-920)/(1080-701):1172;
+  if(narrow&&vh>vw*1.15)W=Math.min(W,900);
+  const k=Math.min(vw/W,vh/560);
+  let fill=Math.max(0,vh/k-657),ss=0,rs=1,st=0;
+  if(narrow){
+   const ramp=Math.min(1,(1080-vw)/120);
+   ss=Math.min(fill*.55,420)*ramp;
+   rs=1+Math.min(fill/1100,.75)*ramp;
+   const slack=219.5-125*rs+ss;
+   st=Math.max(0,slack/2-28)*ramp;
+   fill-=ss;
+  }
+  canvas.style.setProperty('--vc-k',String(k));
+  canvas.style.setProperty('--vc-fill',fill.toFixed(2)+'px');
+  canvas.style.setProperty('--vc-stshift',st.toFixed(2)+'px');
+  canvas.style.setProperty('--vc-sshift',ss.toFixed(2)+'px');
+  canvas.style.setProperty('--vc-rs',String(rs));
+  placeCards();
+ }
+ function tick(t){
+  if(!alive)return;
+  const dt=Math.min(lastTick?(t-lastTick)/1000:0,.1);
+  lastTick=t;
+  if(!reducedMotion.matches&&!document.hidden&&!hovering&&!focusPause)ringPhase-=1.9*dt;
+  placeCards();
+  frame=requestAnimationFrame(tick);
+ }
+ function closeMenu(){menuContainer.classList.remove('vc-nav-open');burger.setAttribute('aria-expanded','false');}
+ burger.addEventListener('click',()=>{
+  const open=menuContainer.classList.toggle('vc-nav-open');
+  burger.setAttribute('aria-expanded',String(open));
+ });
+ stage.addEventListener('click',event=>{if(!menuContainer.contains(event.target))closeMenu();});
+ stage.addEventListener('keydown',event=>{if(event.key==='Escape'){closeMenu();burger.focus();}});
+ stage.querySelectorAll('.vc-menu a').forEach(link=>link.addEventListener('click',closeMenu));
+ ring.addEventListener('pointerenter',()=>{hovering=true;});
+ ring.addEventListener('pointerleave',()=>{hovering=false;});
+ ring.addEventListener('focusin',()=>{focusPause=true;});
+ ring.addEventListener('focusout',event=>{if(!ring.contains(event.relatedTarget))focusPause=false;});
+ let pointerStart=null,dragging=false;
+ ring.addEventListener('pointerdown',event=>{if(event.pointerType!=='mouse'||event.button===0){pointerStart={x:event.clientX,phase:ringPhase};dragging=false;}});
+ ring.addEventListener('pointermove',event=>{if(!pointerStart)return;const delta=event.clientX-pointerStart.x;if(Math.abs(delta)>5)dragging=true;ringPhase=pointerStart.phase+delta*.06;placeCards();});
+ ring.addEventListener('pointerup',()=>{pointerStart=null;setTimeout(()=>{dragging=false;},0);});
+ ring.addEventListener('pointercancel',()=>{pointerStart=null;dragging=false;});
+ ring.addEventListener('click',event=>{if(dragging){event.preventDefault();event.stopPropagation();}},true);
+ // Actualizar pestañas ocultas sin saltos de fase.
+ const onVisibility=()=>{lastTick=0;};
+ document.addEventListener('visibilitychange',onVisibility);
+ const onResize=()=>resize();
+ window.addEventListener('resize',onResize);
+ function stop(){
+  alive=false;cancelAnimationFrame(frame);
+  window.removeEventListener('resize',onResize);
+  document.removeEventListener('visibilitychange',onVisibility);
+  window.removeEventListener('hashchange',stop);
+ }
+ window.addEventListener('hashchange',stop,{once:true});
+ resize();
+ if(!reducedMotion.matches&&!document.documentElement.classList.contains('vc-visited')){
+  document.documentElement.classList.add('vc-visited');
+  const appear=Array.from(stage.querySelectorAll('.vc-nav,.vc-badge,.vc-title,.vc-sub,.vc-hero-cta,.vc-ring,.vc-browser'));
+  appear.forEach((node,index)=>{if(node.animate)node.animate([{opacity:0,translate:'0 '+(index<2?-9:18)+'px'},{opacity:1,translate:'0 0'}],{duration:640+index*45,delay:Math.min(index*95,780),easing:'cubic-bezier(.16,1,.3,1)'});});
+ }
+ frame=requestAnimationFrame(tick);
 }
+
 function workspace(area, module){
  if(area.id==='trovofarma'&&module==='Compra Ágil'){caBuildDashboard();return;}
  const summary = module === 'Resumen';
