@@ -1,0 +1,39 @@
+name: Compra Agil PostgreSQL integration
+
+on:
+  pull_request:
+    branches: [design/cresce-holding-vhs-20261121]
+  push:
+    branches: [review/compra-agil-doble-flujo-20261123]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: cresce_ci_only
+          POSTGRES_DB: cresce_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cresce_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply migrations and run PostgreSQL assertions
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: cresce_ci_only
+          PGDATABASE: cresce_ci
+        run: bash supabase/tests/compra-agil-postgres-integration.sh

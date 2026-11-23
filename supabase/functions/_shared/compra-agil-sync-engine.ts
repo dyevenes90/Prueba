@@ -63,6 +63,52 @@ export function sourceModifiedAt(item: unknown): number | null {
     : null;
 }
 
+/**
+ * Parses API date fields without treating a timezone-less timestamp as UTC.
+ * Explicit offsets remain authoritative; naive ISO datetimes are interpreted
+ * as Chilean civil time. DST gaps are rejected and repeated times choose the
+ * later instant (standard-time side), matching PostgreSQL's AT TIME ZONE.
+ * Date-only and undocumented shapes remain unverifiable.
+ */
+export function parseSourceDate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text) return null;
+  if (/[T ]\d{2}:\d{2}.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+    const normalized = /[+-]\d{4}$/.test(text) ? text.replace(/([+-]\d{2})(\d{2})$/, "$1:$2") : text;
+    const instant = Date.parse(normalized);
+    return Number.isFinite(instant) ? new Date(instant).toISOString() : null;
+  }
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3})\d*)?)?$/.exec(text);
+  if (!match) return null;
+  const [, ys, mos, ds, hs, mis, ss = "0", fraction = ""] = match;
+  const parts = [Number(ys), Number(mos), Number(ds), Number(hs), Number(mis), Number(ss)];
+  const [year, month, day, hour, minute, second] = parts;
+  const millisecond = Number((fraction + "000").slice(0, 3));
+  const wallAsUtc = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+  const desired = new Date(wallAsUtc);
+  if (desired.getUTCFullYear() !== year || desired.getUTCMonth() + 1 !== month || desired.getUTCDate() !== day || hour > 23 || minute > 59 || second > 59) return null;
+
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Santiago", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  });
+  const candidates = new Set<number>();
+  for (const seed of [wallAsUtc - 6 * 3_600_000, wallAsUtc, wallAsUtc + 6 * 3_600_000]) {
+    let candidate = seed;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const fields = Object.fromEntries(formatter.formatToParts(new Date(candidate)).map(({ type, value }) => [type, Number(value)]));
+      const localAsUtc = Date.UTC(fields.year, fields.month - 1, fields.day, fields.hour, fields.minute, fields.second, millisecond);
+      candidate += wallAsUtc - localAsUtc;
+    }
+    const fields = Object.fromEntries(formatter.formatToParts(new Date(candidate)).map(({ type, value }) => [type, Number(value)]));
+    if (fields.year === year && fields.month === month && fields.day === day && fields.hour === hour && fields.minute === minute && fields.second === second) candidates.add(candidate);
+  }
+  const latest = [...candidates].sort((a, b) => b - a)[0];
+  return latest === undefined ? null : new Date(latest).toISOString();
+}
+
 function mergeIncomplete(existing: unknown, incoming: unknown): unknown {
   if (incoming === null || incoming === undefined) return existing;
   if (isRecord(existing) && isRecord(incoming)) {
@@ -104,8 +150,7 @@ export function buildOpportunityRows(
     const institution = isRecord(item.institucion) ? item.institucion : {};
     const amounts = isRecord(item.montos) ? item.montos : {};
     const dates = isRecord(item.fechas) ? item.fechas : {};
-    const validDate = (value: unknown, fallback: unknown) =>
-      typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : fallback ?? null;
+    const validDate = (value: unknown, fallback: unknown) => parseSourceDate(value) ?? fallback ?? null;
     return [{
       codigo: code,
       nombre: typeof item.nombre === "string" && item.nombre.trim() ? item.nombre : old.nombre ?? null,

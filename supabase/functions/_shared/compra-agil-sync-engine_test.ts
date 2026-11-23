@@ -1,4 +1,4 @@
-import { buildOpportunityRows, runPriorityRegion, type ApiItem, type Checkpoint, type PrioritySyncRepository } from "./compra-agil-sync-engine.ts";
+import { buildOpportunityRows, parseSourceDate, runPriorityRegion, type ApiItem, type Checkpoint, type PrioritySyncRepository } from "./compra-agil-sync-engine.ts";
 
 function fixture(pages: Array<{ status?: number; items?: ApiItem[]; total?: number }>) {
   const state: Checkpoint = { region_id: 9, cursor_success: null, window_from: null, window_to: null, next_page: 1, total_pages: null };
@@ -57,6 +57,21 @@ function fixture(pages: Array<{ status?: number; items?: ApiItem[]; total?: numb
 }
 
 const start = "2026-11-23T15:15:00.000Z";
+
+Deno.test("source dates preserve explicit offsets and interpret naive values in Santiago across DST", () => {
+  const cases: Array<[unknown, string | null]> = [
+    ["2026-11-17 16:28", "2026-11-17T19:28:00.000Z"],
+    ["2026-07-17T16:28", "2026-07-17T20:28:00.000Z"],
+    ["2026-11-17T16:28:00-03:00", "2026-11-17T19:28:00.000Z"],
+    ["2026-11-17 16:28:00-0300", "2026-11-17T19:28:00.000Z"],
+    ["2026-11-17T19:28:00Z", "2026-11-17T19:28:00.000Z"],
+    ["2026-11-17", null],
+  ];
+  for (const [input, expected] of cases) {
+    const actual = parseSourceDate(input);
+    if (actual !== expected) throw new Error(`${String(input)} parsed as ${actual}; expected ${expected}`);
+  }
+});
 const run = (f: ReturnType<typeof fixture>, runId = "run-a", maxPages = 4, remaining = 4, bootstrapFrom: string | null = "2026-11-16T03:00:00.000Z", bootstrapWindowHours: number | null = null, startedAt = start) => runPriorityRegion({ regionId: 9, runId, bootstrapFrom, bootstrapWindowHours, startedAt, maxPages, budget: { remaining, consumed: 0 }, repository: f.repo, fetchPage: f.fetchPage, sleep: async () => {}, clock: () => f.clock.value });
 
 Deno.test("priority flow accepts the Excel reference code from a mocked official response", async () => {

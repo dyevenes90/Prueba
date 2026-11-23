@@ -133,6 +133,31 @@ exception when others then
   return null;
 end $$;
 
+-- Los valores con zona explícita representan instantes. Los valores ISO sin
+-- zona en fechas de publicación/cierre se interpretan como hora civil chilena.
+-- El snapshot JSON conserva siempre el texto recibido sin modificar.
+create or replace function public.compra_agil_sync_parse_source_date(p_value text)
+returns timestamptz
+language plpgsql
+stable
+set search_path = pg_catalog, public
+as $$
+declare
+  v_value text := nullif(btrim(p_value), '');
+begin
+  if v_value is null then return null; end if;
+  if v_value ~* '(Z|[+-][0-9]{2}:?[0-9]{2})$' then
+    return v_value::timestamptz;
+  end if;
+  if v_value ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$' then
+    return replace(v_value, 'T', ' ')::timestamp without time zone at time zone 'America/Santiago';
+  end if;
+  -- A date without a time, or another undocumented shape, is not an instant.
+  return null;
+exception when others then
+  return null;
+end $$;
+
 create or replace function public.compra_agil_sync_merge_jsonb(p_old jsonb, p_new jsonb)
 returns jsonb
 language sql
@@ -212,7 +237,11 @@ begin
   if not found or v_lock.lock_token is distinct from p_run_token or v_lock.lock_until <= v_now then
     raise exception 'Lease histórico/regional vencido o perteneciente a otro proceso' using errcode = '55000';
   end if;
-  if v_lock.window_to is distinct from p_window_to or v_lock.next_page <> p_page then
+  -- compra_agil_sync_state always owns the shared regional lease. Its page/window
+  -- belong only to the historical flow; priority paging is checked below against
+  -- the independent priority checkpoint after the same shared lease is locked.
+  if p_flow = 'historical'
+     and (v_lock.window_to is distinct from p_window_to or v_lock.next_page <> p_page) then
     raise exception 'La página no coincide con el checkpoint histórico vigente' using errcode = '40001';
   end if;
   v_lease_until := v_now + interval '5 minutes';
@@ -262,8 +291,8 @@ begin
       v_code, nullif(v_item ->> 'nombre', ''), v_item ->> 'descripcion',
       v_item #>> '{estado,codigo}', v_item #>> '{institucion,organismo_comprador}',
       v_region, nullif(v_item #>> '{montos,monto_disponible_clp}', '')::numeric,
-      nullif(v_item #>> '{fechas,fecha_publicacion}', '')::timestamptz,
-      nullif(v_item #>> '{fechas,fecha_cierre}', '')::timestamptz,
+      public.compra_agil_sync_parse_source_date(v_item #>> '{fechas,fecha_publicacion}'),
+      public.compra_agil_sync_parse_source_date(v_item #>> '{fechas,fecha_cierre}'),
       v_item, v_now, v_now
     ) on conflict (codigo) do nothing
     returning codigo into v_inserted_code;
@@ -292,8 +321,8 @@ begin
         organismo = coalesce(v_item #>> '{institucion,organismo_comprador}', o.organismo),
         region = coalesce(v_region, o.region),
         monto_estimado = coalesce(nullif(v_item #>> '{montos,monto_disponible_clp}', '')::numeric, o.monto_estimado),
-        fecha_publicacion = coalesce(nullif(v_item #>> '{fechas,fecha_publicacion}', '')::timestamptz, o.fecha_publicacion),
-        fecha_cierre = coalesce(nullif(v_item #>> '{fechas,fecha_cierre}', '')::timestamptz, o.fecha_cierre),
+        fecha_publicacion = coalesce(public.compra_agil_sync_parse_source_date(v_item #>> '{fechas,fecha_publicacion}'), o.fecha_publicacion),
+        fecha_cierre = coalesce(public.compra_agil_sync_parse_source_date(v_item #>> '{fechas,fecha_cierre}'), o.fecha_cierre),
         datos_originales = public.compra_agil_sync_merge_jsonb(o.datos_originales, v_item),
         ultima_revision = v_now
       where o.codigo = v_code;
@@ -343,6 +372,7 @@ begin
 end $$;
 
 revoke all on function public.compra_agil_sync_source_modified_at(jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.compra_agil_sync_parse_source_date(text) from public, anon, authenticated, service_role;
 revoke all on function public.compra_agil_sync_merge_jsonb(jsonb, jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.compra_agil_sync_commit_page(text, smallint, uuid, integer, integer, boolean, timestamptz, jsonb) from public, anon, authenticated;
 grant execute on function public.compra_agil_sync_commit_page(text, smallint, uuid, integer, integer, boolean, timestamptz, jsonb) to service_role;
