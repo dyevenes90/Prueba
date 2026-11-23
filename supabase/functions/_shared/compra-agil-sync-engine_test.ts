@@ -1,4 +1,4 @@
-import { buildOpportunityRows, parseSourceDate, runPriorityRegion, type ApiItem, type Checkpoint, type PrioritySyncRepository } from "./compra-agil-sync-engine.ts";
+import { buildOpportunityRows, parseSourceDate, sourceModifiedAt, runPriorityRegion, type ApiItem, type Checkpoint, type PrioritySyncRepository } from "./compra-agil-sync-engine.ts";
 
 function fixture(pages: Array<{ status?: number; items?: ApiItem[]; total?: number }>) {
   const state: Checkpoint = { region_id: 9, cursor_success: null, window_from: null, window_to: null, next_page: 1, total_pages: null };
@@ -72,6 +72,24 @@ Deno.test("source dates preserve explicit offsets and interpret naive values in 
     if (actual !== expected) throw new Error(`${String(input)} parsed as ${actual}; expected ${expected}`);
   }
 });
+
+Deno.test("reported publication and Z modification values reproduce the chronology conflict without changing parsing policy", () => {
+  const samples = [
+    { code: "3861-144-COT26", published: "2026-11-23 19:26", modified: "2026-11-23T19:30:00.570Z", localExpected: "2026-11-23T22:30:00.570Z" },
+    { code: "3565-472-COT26", published: "2026-11-23 19:10", modified: "2026-11-23T19:15:00.707Z", localExpected: "2026-11-23T22:15:00.707Z" },
+  ];
+  for (const sample of samples) {
+    const publicationUtc = parseSourceDate(sample.published);
+    const sourceModifiedUtc = sourceModifiedAt({ fechas: { fecha_ultimo_cambio: sample.modified } });
+    const sourceModifiedIfChileWallTime = parseSourceDate(sample.modified.replace(/Z$/i, ""));
+    if (!publicationUtc || sourceModifiedUtc === null || !sourceModifiedIfChileWallTime) throw new Error(`${sample.code}: date parser returned an unverifiable value`);
+    if (sourceModifiedUtc >= Date.parse(publicationUtc)) throw new Error(`${sample.code}: expected the reported UTC interpretation to reproduce modification-before-publication`);
+    if (sourceModifiedIfChileWallTime !== sample.localExpected || Date.parse(sourceModifiedIfChileWallTime) <= Date.parse(publicationUtc)) throw new Error(`${sample.code}: alternative Chile civil-time interpretation did not restore the reported event order`);
+  }
+});
+
+// This test reproduces the anomaly in the supplied API values only. It is not
+// evidence that ChileCompra intends a Z suffix to mean local civil time.
 const run = (f: ReturnType<typeof fixture>, runId = "run-a", maxPages = 4, remaining = 4, bootstrapFrom: string | null = "2026-11-16T03:00:00.000Z", bootstrapWindowHours: number | null = null, startedAt = start) => runPriorityRegion({ regionId: 9, runId, bootstrapFrom, bootstrapWindowHours, startedAt, maxPages, budget: { remaining, consumed: 0 }, repository: f.repo, fetchPage: f.fetchPage, sleep: async () => {}, clock: () => f.clock.value });
 
 Deno.test("priority flow accepts the Excel reference code from a mocked official response", async () => {
