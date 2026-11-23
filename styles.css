@@ -2775,6 +2775,103 @@ body:not(:has(.cresce-holding)) :is(a,button,summary):focus-visible { outline-co
 body:not(:has(.cresce-holding)) :is(input,select,textarea):focus-visible { outline-color:#79562e; }
 body:not(:has(.cresce-holding)) .ca-workspace .sidebar { box-shadow:0 8px 24px #00000024; }
 body:not(:has(.cresce-holding)) .ca-workspace :is(.ca-filters,.panel,.ca-table-wrap) { box-shadow:var(--shadow-sm); }
+
+/* Marca de agua ambiental en las vistas interiores: queda detrás del contenido. */
+body:not(:has(.cresce-holding)) {
+  position:relative;
+  isolation:isolate;
+}
+body:not(:has(.cresce-holding))::before {
+  content:"";
+  position:fixed;
+  z-index:-1;
+  inset:0;
+  background:url("assets/logos/cresce-logo.webp") center 48% / min(92vmin,980px) no-repeat;
+  opacity:.12;
+  filter:blur(9px);
+  mix-blend-mode:screen;
+  -webkit-mask-image:radial-gradient(ellipse 48% 48% at 50% 48%,#000 28%,#0009 63%,transparent 100%);
+  mask-image:radial-gradient(ellipse 48% 48% at 50% 48%,#000 28%,#0009 63%,transparent 100%);
+  pointer-events:none;
+}
+body:not(:has(.cresce-holding)) main { background:transparent; }
+
+/* El selector de empresas conserva sus rutas y realza los logos al hover/foco. */
+body:not(:has(.cresce-holding)) .shortcut-visual { position:relative; isolation:isolate; }
+body:not(:has(.cresce-holding)) .shortcut-visual::before {
+  content:"";
+  position:absolute;
+  z-index:-1;
+  inset:-13px;
+  border-radius:50%;
+  background:radial-gradient(ellipse at center,#d7ad6b75 0,#bc8e4c42 34%,#a8793020 57%,transparent 76%);
+  opacity:0;
+  filter:blur(7px);
+  transition:opacity .2s ease;
+  pointer-events:none;
+}
+body:not(:has(.cresce-holding)) .shortcut-visual img {
+  filter:brightness(1.18) contrast(1.06) drop-shadow(0 1px 4px #0008);
+  transition:filter .2s ease;
+}
+body:not(:has(.cresce-holding)) .area-shortcut:hover .shortcut-visual::before,
+body:not(:has(.cresce-holding)) .area-shortcut:focus-visible .shortcut-visual::before { opacity:1; }
+body:not(:has(.cresce-holding)) .area-shortcut[aria-current="page"] .shortcut-visual::before { opacity:.62; }
+body:not(:has(.cresce-holding)) .area-shortcut:is(:hover,:focus-visible,[aria-current="page"]) .shortcut-visual img {
+  filter:brightness(1.28) contrast(1.08) drop-shadow(0 1px 5px #d5ab6570);
+}
+body:not(:has(.cresce-holding)) .area-shortcut:focus-visible { outline:2px solid #d9b97e; outline-offset:2px; }
+
+/* Logo central nítido sobre la marca de agua, sin marco ni fondo propio. */
+.cresce-holding-mark {
+  position:absolute;
+  z-index:5;
+  left:50%;
+  top:48%;
+  width:min(28vw,350px);
+  aspect-ratio:1;
+  transform:translate(-50%,-50%);
+  pointer-events:none;
+}
+.cresce-holding-mark img {
+  display:block;
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  mix-blend-mode:screen;
+  filter:drop-shadow(0 0 18px #c39b5a32);
+  animation:cresce-mark-turn 52s linear infinite;
+}
+@keyframes cresce-mark-turn { to { transform:rotate(360deg); } }
+
+/* Sin banda: la continuación queda como una acción secundaria compacta. */
+body:not(:has(.cresce-holding)) .ca-sync-controls.cresce-sync-compact {
+  display:flex;
+  justify-content:flex-end;
+  min-height:0;
+  margin:0 0 12px;
+  padding:0;
+  border:0;
+  background:transparent;
+  box-shadow:none;
+}
+body:not(:has(.cresce-holding)) .cresce-sync-compact #ca-sync {
+  width:auto;
+  min-width:0;
+  min-height:36px;
+  padding:7px 13px;
+  border-radius:999px;
+  font-size:12px;
+}
+@media (max-width:640px) {
+  .cresce-holding-mark { width:min(52vw,270px); top:46%; }
+  body:not(:has(.cresce-holding))::before { background-size:min(112vmin,760px); opacity:.09; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .cresce-holding-mark img { animation:none; }
+  body:not(:has(.cresce-holding)) .shortcut-visual::before,
+  body:not(:has(.cresce-holding)) .shortcut-visual img { transition:none; }
+}
 @media (max-width:760px) {
   body:not(:has(.cresce-holding)) .workspace-heading { margin-bottom:18px; }
   body:not(:has(.cresce-holding)) .ca-workspace .panel,
