@@ -74,7 +74,7 @@ begin
     lock_token = v_token, window_from = '2026-11-23T00:00:00Z', window_to = v_window_to, next_page = 1, total_pages = 4
   where region_id = 9;
 
-  select public.compra_agil_sync_commit_page('priority', 9, v_token, 1, 4, false, v_window_to,
+  select public.compra_agil_sync_commit_page('priority', 9::smallint, v_token, 1, 4, false, v_window_to,
     '[{"codigo":"555-1-COT26","nombre":"Primera versión","estado":{"codigo":"publicada"},"institucion":{"region":9,"nombre_region":"Región de La Araucanía"},"fechas":{"fecha_ultimo_cambio":"2026-11-23T10:00:00Z","fecha_cierre":"2026-11-17 16:28"},"montos":{"monto_disponible_clp":100}}]'::jsonb)
   into v_result;
   if (v_result->>'inserted')::int <> 1 then raise exception 'Commit prioritario no insertó su registro'; end if;
@@ -87,13 +87,13 @@ begin
     raise exception 'Fecha sin zona no se normalizó a America/Santiago (DST noviembre)';
   end if;
 
-  select public.compra_agil_sync_commit_page('historical', 9, v_token, 31, 99, false, '2026-11-18T00:00:00Z', '[]'::jsonb) into v_result;
+  select public.compra_agil_sync_commit_page('historical', 9::smallint, v_token, 31, 99, false, '2026-11-18T00:00:00Z', '[]'::jsonb) into v_result;
   select * into v_historical from public.compra_agil_sync_state where region_id = 9;
   select * into v_priority from public.compra_agil_sync_priority_state where region_id = 9;
   if v_historical.next_page <> 32 or v_priority.next_page <> 2 then raise exception 'Flujo histórico no avanzó su propio cursor'; end if;
 
   -- Stale historical source version is observed but cannot replace priority data.
-  perform public.compra_agil_sync_commit_page('historical', 9, v_token, 32, 99, false, '2026-11-18T00:00:00Z',
+  perform public.compra_agil_sync_commit_page('historical', 9::smallint, v_token, 32, 99, false, '2026-11-18T00:00:00Z',
     '[{"codigo":"555-1-COT26","nombre":"Versión antigua","fechas":{"fecha_ultimo_cambio":"2026-11-22T10:00:00Z"},"montos":{"monto_disponible_clp":1}}]'::jsonb);
   if (select nombre from public.compra_agil_oportunidades where codigo = '555-1-COT26') <> 'Primera versión'
      or (select count(*) from public.compra_agil_sync_observations where codigo = '555-1-COT26' and reason = 'source_version_older') <> 1 then
@@ -101,9 +101,9 @@ begin
   end if;
 
   -- A later comparable source timestamp can update the row; missing source time cannot.
-  perform public.compra_agil_sync_commit_page('priority', 9, v_token, 2, 4, false, v_window_to,
+  perform public.compra_agil_sync_commit_page('priority', 9::smallint, v_token, 2, 4, false, v_window_to,
     '[{"codigo":"555-1-COT26","nombre":"Versión nueva","fechas":{"fecha_ultimo_cambio":"2026-11-24T10:00:00Z"},"montos":{"monto_disponible_clp":250}}]'::jsonb);
-  perform public.compra_agil_sync_commit_page('priority', 9, v_token, 3, 4, false, v_window_to,
+  perform public.compra_agil_sync_commit_page('priority', 9::smallint, v_token, 3, 4, false, v_window_to,
     '[{"codigo":"555-1-COT26","nombre":"Sin versión verificable"}]'::jsonb);
   if (select nombre from public.compra_agil_oportunidades where codigo = '555-1-COT26') <> 'Versión nueva'
      or (select monto_estimado from public.compra_agil_oportunidades where codigo = '555-1-COT26') <> 250
@@ -113,7 +113,7 @@ begin
 
   -- Failed second item must roll back first item and checkpoint advancement.
   begin
-    perform public.compra_agil_sync_commit_page('priority', 9, v_token, 4, 4, true, v_window_to,
+    perform public.compra_agil_sync_commit_page('priority', 9::smallint, v_token, 4, 4, true, v_window_to,
       '[{"codigo":"777-1-COT26","nombre":"Debe revertirse"},{"codigo":"bad-code"}]'::jsonb);
   exception when sqlstate '22023' then v_failed := true;
   end;
@@ -126,7 +126,7 @@ begin
   update public.compra_agil_sync_state set lock_until = clock_timestamp() - interval '1 second' where region_id = 9;
   v_failed := false;
   begin
-    perform public.compra_agil_sync_commit_page('priority', 9, v_token, 4, 4, true, v_window_to, '[]'::jsonb);
+    perform public.compra_agil_sync_commit_page('priority', 9::smallint, v_token, 4, 4, true, v_window_to, '[]'::jsonb);
   exception when sqlstate '55000' then v_failed := true;
   end;
   select * into v_historical from public.compra_agil_sync_state where region_id = 9;
