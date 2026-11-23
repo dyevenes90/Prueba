@@ -137,6 +137,9 @@ begin
   if public.compra_agil_sync_parse_source_date('2026-07-17 16:28') <> '2026-07-17T20:28:00Z'::timestamptz then
     raise exception 'Fecha invierno no respeta zona America/Santiago';
   end if;
+  if public.compra_agil_sync_parse_source_date('2026-11-17 16:28') <> '2026-11-17T19:28:00Z'::timestamptz then
+    raise exception 'Fecha verano no respeta zona America/Santiago';
+  end if;
   if public.compra_agil_sync_parse_source_date('2026-11-17T16:28:00-03:00') <> '2026-11-17T19:28:00Z'::timestamptz
      or public.compra_agil_sync_parse_source_date('2026-11-17') is not null then
     raise exception 'Offset explícito o forma de fecha no verificable se interpretó incorrectamente';
