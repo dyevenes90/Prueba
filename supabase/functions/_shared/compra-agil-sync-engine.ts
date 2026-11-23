@@ -25,17 +25,24 @@ export type ApiPageResponse = {
   json(): Promise<unknown>;
 };
 export type RequestBudget = { remaining: number; consumed: number };
+export type PageCommit = {
+  regionId: number;
+  runId: string;
+  page: number;
+  totalPages: number | null;
+  complete: boolean;
+  windowTo: string;
+  items: ApiItem[];
+};
 
 export interface PrioritySyncRepository {
   readCheckpoint(regionId: number): Promise<Checkpoint | null>;
   acquireRegionLock(regionId: number, runId: string, nowIso: string, lockUntilIso: string): Promise<boolean>;
   assertRegionLock(regionId: number, runId: string, nowIso: string, lockUntilIso: string): Promise<boolean>;
   startWindow(regionId: number, from: string, to: string, runId: string, timestamp: string): Promise<void>;
-  saveProgress(regionId: number, nextPage: number, totalPages: number | null, runId: string, timestamp: string): Promise<void>;
-  finishWindow(regionId: number, cursorSuccess: string, runId: string, timestamp: string): Promise<void>;
+  commitPage(input: PageCommit): Promise<{ inserted: number; updated: number; observed?: number }>;
   recordError(regionId: number, error: string | null, timestamp: string): Promise<void>;
   releaseRegionLock(regionId: number, runId: string): Promise<void>;
-  upsertItems(items: ApiItem[], timestamp: string): Promise<{ inserted: number; updated: number }>;
 }
 
 export function uniqueApiItems(items: ApiItem[]): ApiItem[] {
@@ -50,19 +57,10 @@ export function uniqueApiItems(items: ApiItem[]): ApiItem[] {
 export function sourceModifiedAt(item: unknown): number | null {
   if (!isRecord(item)) return null;
   const dates = isRecord(item.fechas) ? item.fechas : {};
-  const candidates = [
-    item.fecha_ultima_modificacion,
-    item.fecha_modificacion,
-    item.fechaUltimaModificacion,
-    dates.fecha_ultimo_cambio,
-    dates.fecha_ultima_modificacion,
-    dates.fecha_modificacion,
-    dates.ultima_modificacion,
-  ];
-  for (const value of candidates) {
-    if (typeof value === "string" && /(Z|[+-]\d{2}:\d{2})$/i.test(value) && Number.isFinite(Date.parse(value))) return Date.parse(value);
-  }
-  return null;
+  const value = dates.fecha_ultimo_cambio;
+  return typeof value === "string" && /(Z|[+-]\d{2}:\d{2})$/i.test(value) && Number.isFinite(Date.parse(value))
+    ? Date.parse(value)
+    : null;
 }
 
 function mergeIncomplete(existing: unknown, incoming: unknown): unknown {
@@ -92,16 +90,16 @@ export function buildOpportunityRows(
     const old = prior.get(code) ?? {};
     const sourceModified = sourceModifiedAt(item);
     const oldSourceModified = sourceModifiedAt(old.datos_originales);
-    const oldFetchedAt = typeof old.ultima_revision === "string" ? Date.parse(old.ultima_revision) : NaN;
-    // An old scan cannot replace a later source revision. With no comparable
-    // source timestamp, preserve an existing row instead of guessing recency.
+    // Compare only source timestamps. Fetch time is never a proxy for version
+    // order; if either source timestamp is absent, preserve the existing row.
     if (old.codigo && source === "historical" && (
       sourceModified === null ||
-      (oldSourceModified !== null && sourceModified < oldSourceModified) ||
-      (Number.isFinite(oldFetchedAt) && sourceModified <= oldFetchedAt)
+      oldSourceModified === null ||
+      sourceModified < oldSourceModified
     )) return [];
-    if (old.codigo && source === "priority" && oldSourceModified !== null &&
-      (sourceModified === null || sourceModified < oldSourceModified)) return [];
+    if (old.codigo && source === "priority" && (
+      sourceModified === null || oldSourceModified === null || sourceModified < oldSourceModified
+    )) return [];
     const state = isRecord(item.estado) ? item.estado : {};
     const institution = isRecord(item.institucion) ? item.institucion : {};
     const amounts = isRecord(item.montos) ? item.montos : {};
@@ -145,7 +143,6 @@ export async function runPriorityRegion(options: {
   const initial = await repository.readCheckpoint(regionId);
   if (!initial) return { ...empty, error: "No existe checkpoint prioritario para la región; aplique la migración revisada" };
 
-  const startedMs = Date.parse(options.startedAt);
   const nowIso = new Date(clock()).toISOString();
   const acquired = await repository.acquireRegionLock(
     regionId,
@@ -258,12 +255,6 @@ export async function runPriorityRegion(options: {
       if (items.length > SYNC_PAGE_SIZE) throw new Error("La API excedió el tamaño de página; checkpoint sin avanzar");
       found += items.length;
       const uniqueItems = uniqueApiItems(items);
-      await assertLock();
-      const counts = await repository.upsertItems(uniqueItems, new Date(clock()).toISOString());
-      inserted += counts.inserted;
-      updated += counts.updated;
-      successfulPages++;
-
       const pagination = body.payload.paginacion;
       const reportedPages = isRecord(pagination) ? pagination.total_paginas : null;
       const hasReportedTotal = Number.isInteger(reportedPages) && Number(reportedPages) > 0;
@@ -271,14 +262,13 @@ export async function runPriorityRegion(options: {
         ? Number(reportedPages)
         : items.length < SYNC_PAGE_SIZE ? page : totalPages;
       complete = totalPages !== null ? page >= totalPages : items.length < SYNC_PAGE_SIZE;
-      const timestamp = new Date().toISOString();
-      if (complete) {
-        await assertLock();
-        await repository.finishWindow(regionId, windowTo, runId, timestamp);
-      } else {
-        await assertLock();
-        await repository.saveProgress(regionId, page + 1, totalPages, runId, timestamp);
-      }
+      await assertLock();
+      const committed = await repository.commitPage({
+        regionId, runId, page, totalPages, complete, windowTo, items: uniqueItems,
+      });
+      inserted += committed.inserted;
+      updated += committed.updated;
+      successfulPages++;
       page++;
     }
   } catch (error) {

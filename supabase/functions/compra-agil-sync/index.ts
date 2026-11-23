@@ -1,5 +1,5 @@
 import { withSupabase } from "npm:@supabase/server@1";
-import { buildOpportunityRows, DEFAULT_PRIORITY_BOOTSTRAP_HOURS, MAX_PRIORITY_BOOTSTRAP_HOURS } from "../_shared/compra-agil-sync-engine.ts";
+import { DEFAULT_PRIORITY_BOOTSTRAP_HOURS, MAX_PRIORITY_BOOTSTRAP_HOURS } from "../_shared/compra-agil-sync-engine.ts";
 import { authorizeSyncAction } from "../_shared/compra-agil-sync-auth.ts";
 
 const corsHeaders = {
@@ -278,14 +278,6 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
           oportunidades_nuevas: inserted, error_detalle: error,
         }).eq("id", executionId);
       };
-      const refreshOwnedLease = async () => {
-        const timestamp = new Date().toISOString();
-        const { data, error } = await db.from("compra_agil_sync_state")
-          .update({ lock_until: new Date(Date.now() + 5 * 60_000).toISOString(), updated_at: timestamp })
-          .eq("region_id", regionId).eq("lock_token", runId).gt("lock_until", timestamp)
-          .select("region_id").maybeSingle();
-        if (error || !data) throw new Error("Se perdió el bloqueo regional; se detuvo la ejecución sin guardar cambios");
-      };
       let windowFrom = state.window_from as string | null;
       let windowTo = state.window_to as string | null;
       let page = Number(state.next_page || 1);
@@ -382,40 +374,22 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
           const validByCode = new Map<string, ApiItem>();
           for (const item of items) if (typeof item.codigo === "string" && item.codigo.trim()) validByCode.set(item.codigo.trim(), { ...item, codigo: item.codigo.trim() });
           const validItems = [...validByCode.values()];
-          const codes = [...new Set(validItems.map((item) => item.codigo as string))];
-          const { data: existing, error: readError } = codes.length
-            ? await db.from("compra_agil_oportunidades").select("codigo, nombre, primera_deteccion, ultima_revision, datos_originales, descripcion, estado, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre").in("codigo", codes)
-            : { data: [], error: null };
-          if (readError) throw new Error("No se pudieron revisar las oportunidades existentes");
-          const prior = new Map((existing ?? []).map((row) => [row.codigo, row]));
-          const timestamp = new Date().toISOString();
-          const rows = buildOpportunityRows(validItems, existing ?? [], REGIONS[regionId], timestamp, "historical");
-          if (rows.length) {
-            await refreshOwnedLease();
-            const { error } = await db.from("compra_agil_oportunidades").upsert(rows, { onConflict: "codigo" });
-            if (error) throw new Error("No se pudieron guardar las oportunidades idempotentemente");
-          }
-          inserted += rows.filter((row) => !prior.has(String(row.codigo))).length;
-          updated += rows.filter((row) => prior.has(String(row.codigo))).length;
           const reportedPages = payload.paginacion?.total_paginas;
           const hasReportedTotal = Number.isInteger(reportedPages) && Number(reportedPages) > 0;
           totalPages = hasReportedTotal
             ? Number(reportedPages)
             : items.length < PAGE_SIZE ? page : totalPages;
-          const pageFinished = totalPages !== null ? page >= totalPages : items.length < PAGE_SIZE;
-          complete = pageFinished;
-          if (complete) {
-            const { data: completedState, error } = await db.from("compra_agil_sync_state").update({
-              cursor_success: windowTo, window_from: null, window_to: null, next_page: 1, total_pages: null,
-              last_success_at: timestamp, last_error: null, lock_until: new Date(Date.now() + 5 * 60_000).toISOString(), updated_at: timestamp,
-            }).eq("region_id", regionId).eq("lock_token", runId).gt("lock_until", timestamp).select("region_id").maybeSingle();
-            if (error || !completedState) throw new Error("No se pudo confirmar el cursor exitoso con el bloqueo vigente");
-          } else {
-            const { data: progressedState, error } = await db.from("compra_agil_sync_state").update({
-              next_page: page + 1, total_pages: totalPages, lock_until: new Date(Date.now() + 5 * 60_000).toISOString(), updated_at: timestamp,
-            }).eq("region_id", regionId).eq("lock_token", runId).gt("lock_until", timestamp).select("region_id").maybeSingle();
-            if (error || !progressedState) throw new Error("No se pudo guardar el punto de continuación con el bloqueo vigente");
+          complete = totalPages !== null ? page >= totalPages : items.length < PAGE_SIZE;
+          const { data: committed, error: commitError } = await db.rpc("compra_agil_sync_commit_page", {
+            p_flow: "historical", p_region_id: regionId, p_run_token: runId,
+            p_page: page, p_total_pages: totalPages, p_complete: complete,
+            p_window_to: windowTo, p_items: validItems,
+          });
+          if (commitError || !committed || !Number.isInteger(committed.inserted) || !Number.isInteger(committed.updated)) {
+            throw new Error("El commit transaccional del flujo histórico falló; oportunidades y checkpoint quedaron sin cambios");
           }
+          inserted += committed.inserted;
+          updated += committed.updated;
           page++;
         }
       } catch (error) {

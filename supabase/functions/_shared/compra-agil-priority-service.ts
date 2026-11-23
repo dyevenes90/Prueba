@@ -1,4 +1,4 @@
-import { buildOpportunityRows, runPriorityRegion, type ApiItem, type Checkpoint, type PrioritySyncRepository, type RequestBudget } from "./compra-agil-sync-engine.ts";
+import { runPriorityRegion, type Checkpoint, type PageCommit, type PrioritySyncRepository, type RequestBudget } from "./compra-agil-sync-engine.ts";
 
 type Db = any;
 const MAX_REQUESTS = 4;
@@ -51,7 +51,6 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
         .select("lock_token").eq("region_id", regionId).maybeSingle();
       return !owner.error && owner.data?.lock_token === runId;
     };
-
     const repository: PrioritySyncRepository = {
       readCheckpoint: async () => {
         const result = await db.from("compra_agil_sync_priority_state").select("region_id, cursor_success, window_from, window_to, next_page, total_pages, last_attempt_at").eq("region_id", regionId).single();
@@ -73,15 +72,21 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
         const result = await db.from("compra_agil_sync_priority_state").update({ window_from: from, window_to: to, next_page: 1, total_pages: null, last_attempt_at: timestamp, last_error: null, updated_at: timestamp }).eq("region_id", regionId).eq("lock_token", runId).is("window_from", null).is("window_to", null).select("region_id").maybeSingle();
         if (result.error || !result.data) throw new Error("No se pudo guardar la ventana prioritaria");
       },
-      saveProgress: async (_id, next, total, _run, timestamp) => {
-        if (!await assertLease(timestamp)) throw new Error("Se perdió el bloqueo regional; el checkpoint no avanzó");
-        const progress = await db.from("compra_agil_sync_priority_state").update({ next_page: next, total_pages: total, last_attempt_at: timestamp, updated_at: timestamp }).eq("region_id", regionId).eq("lock_token", runId).select("region_id").maybeSingle();
-        if (progress.error || !progress.data) throw new Error("No se pudo guardar el checkpoint prioritario con el bloqueo vigente");
-      },
-      finishWindow: async (_id, cursor, _run, timestamp) => {
-        if (!await assertLease(timestamp)) throw new Error("Se perdió el bloqueo regional; el cursor exitoso no avanzó");
-        const finish = await db.from("compra_agil_sync_priority_state").update({ cursor_success: cursor, window_from: null, window_to: null, next_page: 1, total_pages: null, last_success_at: timestamp, last_attempt_at: timestamp, last_error: null, updated_at: timestamp }).eq("region_id", regionId).eq("lock_token", runId).select("region_id").maybeSingle();
-        if (finish.error || !finish.data) throw new Error("No se pudo confirmar la ventana prioritaria con el bloqueo vigente");
+      commitPage: async (input: PageCommit) => {
+        const { data, error } = await db.rpc("compra_agil_sync_commit_page", {
+          p_flow: "priority",
+          p_region_id: input.regionId,
+          p_run_token: input.runId,
+          p_page: input.page,
+          p_total_pages: input.totalPages,
+          p_complete: input.complete,
+          p_window_to: input.windowTo,
+          p_items: input.items,
+        });
+        if (error || !data || !Number.isInteger(data.inserted) || !Number.isInteger(data.updated)) {
+          throw new Error("La operación transaccional del flujo prioritario falló; datos y checkpoint no se confirmaron");
+        }
+        return { inserted: data.inserted, updated: data.updated, observed: data.observed };
       },
       recordError: async (_id, error, timestamp) => {
         if (!await assertLease(timestamp)) return;
@@ -90,24 +95,6 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
       releaseRegionLock: async () => {
         await db.from("compra_agil_sync_priority_state").update({ lock_token: null, updated_at: new Date().toISOString() }).eq("region_id", regionId).eq("lock_token", runId);
         await db.from("compra_agil_sync_state").update({ lock_until: new Date(0).toISOString(), lock_token: null, updated_at: new Date().toISOString() }).eq("region_id", regionId).eq("lock_token", runId);
-      },
-      upsertItems: async (items: ApiItem[], timestamp) => {
-        if (!await assertOwnedLease(timestamp)) throw new Error("Se perdió el bloqueo regional antes de guardar oportunidades");
-        const unique = new Map(items.flatMap((item) => typeof item.codigo === "string" && item.codigo.trim() ? [[item.codigo.trim(), item] as const] : []));
-        const codes = [...unique.keys()];
-        const existingResult = codes.length ? await db.from("compra_agil_oportunidades").select("codigo, nombre, descripcion, primera_deteccion, ultima_revision, datos_originales, estado, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre").in("codigo", codes) : { data: [], error: null };
-        if (existingResult.error) throw new Error("No se pudieron revisar las oportunidades existentes");
-        const existing = existingResult.data ?? [];
-        const rows = buildOpportunityRows([...unique.values()], existing, REGIONS[regionId], timestamp, "priority");
-        if (rows.length) {
-          if (!await assertOwnedLease(new Date().toISOString())) throw new Error("Se perdió el bloqueo regional antes de confirmar oportunidades");
-          const saved = await db.from("compra_agil_oportunidades").upsert(rows, { onConflict: "codigo" });
-          if (saved.error) throw new Error("No se pudieron guardar oportunidades de forma idempotente");
-        }
-        return {
-          inserted: rows.filter((row) => !existing.some((prior: Record<string, unknown>) => prior.codigo === row.codigo)).length,
-          updated: rows.filter((row) => existing.some((prior: Record<string, unknown>) => prior.codigo === row.codigo)).length,
-        };
       },
     };
     let result: Awaited<ReturnType<typeof runPriorityRegion>>;
