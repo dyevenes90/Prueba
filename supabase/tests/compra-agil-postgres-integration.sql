@@ -131,7 +131,7 @@ begin
   end;
   select * into v_historical from public.compra_agil_sync_state where region_id = 9;
   select * into v_priority from public.compra_agil_sync_priority_state where region_id = 9;
-  if not v_failed or v_priority.next_page <> 4 or v_historical.next_page <> 32 then raise exception 'Lease vencido avanzó checkpoint'; end if;
+  if not v_failed or v_priority.next_page <> 4 or v_historical.next_page <> 33 then raise exception 'Lease vencido avanzó checkpoint'; end if;
 
   -- Winter offset check uses the actual PostgreSQL tzdata for America/Santiago.
   if public.compra_agil_sync_parse_source_date('2026-07-17 16:28') <> '2026-07-17T20:28:00Z'::timestamptz then
