@@ -609,7 +609,7 @@ function home(){
   main.innerHTML=`<h1 class="sr-only">CRESCE Holding</h1><section class="cresce-holding" aria-label="Empresas de CRESCE">
     <div class="cresce-holding-stage">
       <div class="cresce-holding-backdrop" aria-hidden="true"><img src="assets/logos/cresce-logo.webp" alt=""></div>
-      <div class="cresce-holding-mark" aria-hidden="true"><img src="assets/logos/cresce-logo.webp" alt=""></div>
+      <div class="cresce-holding-mark" aria-hidden="true"><img src="assets/logos/cresce-logo-transparent.png" alt=""></div>
       <div class="cresce-holding-orbit" role="group" aria-label="Empresas del holding">
         ${areas.map((a,i)=>`<a href="${target(a)}" class="cresce-holding-book" data-book="${i}" aria-label="Abrir ${a.name}" title="${a.name}"><span class="cresce-holding-book-face"><img src="${a.logo}" alt="" loading="eager" decoding="async"><span class="cresce-holding-book-name">${a.name}</span></span></a>`).join('')}
       </div>

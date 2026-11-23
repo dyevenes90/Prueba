@@ -2824,6 +2824,9 @@ body:not(:has(.cresce-holding)) .area-shortcut:focus-visible { outline:2px solid
 
 /* Logo central nítido sobre la marca de agua, sin marco ni fondo propio. */
 .cresce-holding-mark {
+  background:transparent;
+  border:0;
+  box-shadow:none;
   position:absolute;
   z-index:5;
   left:50%;
@@ -2838,8 +2841,8 @@ body:not(:has(.cresce-holding)) .area-shortcut:focus-visible { outline:2px solid
   width:100%;
   height:100%;
   object-fit:contain;
-  mix-blend-mode:screen;
-  filter:drop-shadow(0 0 18px #c39b5a32);
+  mix-blend-mode:normal;
+  filter:drop-shadow(0 0 14px #c39b5a30);
   animation:cresce-mark-turn 52s linear infinite;
 }
 @keyframes cresce-mark-turn { to { transform:rotate(360deg); } }
