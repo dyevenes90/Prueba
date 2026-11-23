@@ -2,6 +2,7 @@
 -- permanece intacto en compra_agil_sync_state.
 create table if not exists public.compra_agil_sync_priority_state (
   region_id smallint primary key check (region_id in (9, 14)),
+  lock_token uuid,
   cursor_success timestamptz,
   window_from timestamptz,
   window_to timestamptz,
@@ -13,6 +14,9 @@ create table if not exists public.compra_agil_sync_priority_state (
   updated_at timestamptz not null default now(),
   check ((window_from is null) = (window_to is null))
 );
+
+alter table public.compra_agil_sync_priority_state
+  add column if not exists lock_token uuid;
 
 insert into public.compra_agil_sync_priority_state (region_id)
 values (9), (14)

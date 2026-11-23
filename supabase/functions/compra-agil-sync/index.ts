@@ -1,4 +1,6 @@
 import { withSupabase } from "npm:@supabase/server@1";
+import { buildOpportunityRows, DEFAULT_PRIORITY_BOOTSTRAP_HOURS, MAX_PRIORITY_BOOTSTRAP_HOURS } from "../_shared/compra-agil-sync-engine.ts";
+import { authorizeSyncAction } from "../_shared/compra-agil-sync-auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -112,16 +114,15 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
     return json({ error: "Cuerpo JSON inválido" }, 400);
   }
   if (!isRecord(requestBody)) return json({ error: "El cuerpo debe ser un objeto JSON" }, 400);
-  const isUser = ctx.authMode === "user";
-  if (isUser) {
-    const allowedIds = (Deno.env.get("CRESCE_ALLOWED_USER_IDS") ?? "").split(/[\s,]+/).filter(Boolean);
-    if (!allowedIds.length || typeof ctx.userClaims?.id !== "string" || !allowedIds.includes(ctx.userClaims.id)) {
-      return json({ error: "Usuario no autorizado para Compra Ágil" }, 403);
-    }
-    if (["sincronizacion_programada", "sincronizacion_prioritaria_programada"].includes(String(requestBody.accion))) return json({ error: "Acción reservada para Cron" }, 403);
-  } else if (!["sincronizacion_programada", "sincronizacion_prioritaria_programada"].includes(String(requestBody.accion))) {
-    return json({ error: "La clave de Cron solo permite sincronizaciones programadas" }, 403);
-  }
+  const allowedIds = (Deno.env.get("CRESCE_ALLOWED_USER_IDS") ?? "").split(/[\s,]+/).filter(Boolean);
+  const authorization = authorizeSyncAction({
+    authMode: ctx.authMode ?? null,
+    authKeyName: ctx.authKeyName,
+    userId: ctx.userClaims?.id,
+    allowedUserIds: allowedIds,
+    action: typeof requestBody.accion === "string" ? requestBody.accion : undefined,
+  });
+  if (!authorization.allowed) return json({ error: authorization.error }, authorization.status);
   if (requestBody.accion !== undefined && !["detalle", "sincronizar_regiones", "buscar_compras_nuevas", "continuar_historico", "sincronizacion_programada", "sincronizacion_prioritaria_programada"].includes(String(requestBody.accion))) {
     return json({ error: "Acción no válida" }, 400);
   }
@@ -190,10 +191,18 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
     if (!ticket) return json({ error: "Configuración del servicio incompleta" }, 500);
     const scheduled = requestBody.accion === "sincronizacion_prioritaria_programada";
     const regions = Array.isArray(requestBody.regiones) ? requestBody.regiones.map(Number) : [9, 14];
-    const bootstrapFrom = typeof requestBody.cambio_desde === "string" && Number.isFinite(Date.parse(requestBody.cambio_desde))
+    const requestedBootstrapFrom = typeof requestBody.cambio_desde === "string" && Number.isFinite(Date.parse(requestBody.cambio_desde))
       ? new Date(requestBody.cambio_desde).toISOString() : null;
+    const rawBootstrapHours = Deno.env.get("COMPRA_AGIL_PRIORITY_BOOTSTRAP_HOURS");
+    const bootstrapWindowHours = scheduled
+      ? rawBootstrapHours === undefined ? DEFAULT_PRIORITY_BOOTSTRAP_HOURS : Number(rawBootstrapHours)
+      : null;
+    if (scheduled && (!Number.isInteger(bootstrapWindowHours) || bootstrapWindowHours! < 1 || bootstrapWindowHours! > MAX_PRIORITY_BOOTSTRAP_HOURS)) {
+      return json({ error: `COMPRA_AGIL_PRIORITY_BOOTSTRAP_HOURS debe ser entero de 1 a ${MAX_PRIORITY_BOOTSTRAP_HOURS}` }, 500);
+    }
+    const bootstrapFrom = scheduled ? null : requestedBootstrapFrom;
     const result = await import("../_shared/compra-agil-priority-service.ts").then(({ runPrioritySync }) => runPrioritySync({
-      db: ctx.supabaseAdmin, ticket, regions, bootstrapFrom, scheduled,
+      db: ctx.supabaseAdmin, ticket, regions, bootstrapFrom, bootstrapWindowHours, scheduled,
     }));
     return json(result, "error" in result ? 503 : 200);
   }
@@ -268,6 +277,14 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
           estado: status, termino: new Date().toISOString(), oportunidades_encontradas: found,
           oportunidades_nuevas: inserted, error_detalle: error,
         }).eq("id", executionId);
+      };
+      const refreshOwnedLease = async () => {
+        const timestamp = new Date().toISOString();
+        const { data, error } = await db.from("compra_agil_sync_state")
+          .update({ lock_until: new Date(Date.now() + 5 * 60_000).toISOString(), updated_at: timestamp })
+          .eq("region_id", regionId).eq("lock_token", runId).gt("lock_until", timestamp)
+          .select("region_id").maybeSingle();
+        if (error || !data) throw new Error("Se perdió el bloqueo regional; se detuvo la ejecución sin guardar cambios");
       };
       let windowFrom = state.window_from as string | null;
       let windowTo = state.window_to as string | null;
@@ -367,39 +384,19 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
           const validItems = [...validByCode.values()];
           const codes = [...new Set(validItems.map((item) => item.codigo as string))];
           const { data: existing, error: readError } = codes.length
-            ? await db.from("compra_agil_oportunidades").select("codigo, primera_deteccion, descripcion, estado, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre").in("codigo", codes)
+            ? await db.from("compra_agil_oportunidades").select("codigo, nombre, primera_deteccion, ultima_revision, datos_originales, descripcion, estado, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre").in("codigo", codes)
             : { data: [], error: null };
           if (readError) throw new Error("No se pudieron revisar las oportunidades existentes");
           const prior = new Map((existing ?? []).map((row) => [row.codigo, row]));
           const timestamp = new Date().toISOString();
-          const rows = validItems.map((item) => {
-            const stateObj = isRecord(item.estado) ? item.estado : {};
-            const institution = isRecord(item.institucion) ? item.institucion : {};
-            const amounts = isRecord(item.montos) ? item.montos : {};
-            const dates = isRecord(item.fechas) ? item.fechas : {};
-            const old = prior.get(item.codigo as string);
-            const safeDate = (value: unknown, fallback: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : fallback ?? null;
-            return {
-              codigo: item.codigo,
-              nombre: typeof item.nombre === "string" ? item.nombre : null,
-              descripcion: old?.descripcion ?? null,
-              estado: typeof stateObj.codigo === "string" ? stateObj.codigo : old?.estado ?? null,
-              organismo: typeof institution.organismo_comprador === "string" ? institution.organismo_comprador : old?.organismo ?? null,
-              region: normalizeRegion(institution.nombre_region, regionId),
-              monto_estimado: typeof amounts.monto_disponible_clp === "number" && Number.isFinite(amounts.monto_disponible_clp) ? amounts.monto_disponible_clp : old?.monto_estimado ?? null,
-              fecha_publicacion: safeDate(dates.fecha_publicacion, old?.fecha_publicacion),
-              fecha_cierre: safeDate(dates.fecha_cierre, old?.fecha_cierre),
-              datos_originales: item,
-              primera_deteccion: old?.primera_deteccion ?? timestamp,
-              ultima_revision: timestamp,
-            };
-          });
+          const rows = buildOpportunityRows(validItems, existing ?? [], REGIONS[regionId], timestamp, "historical");
           if (rows.length) {
+            await refreshOwnedLease();
             const { error } = await db.from("compra_agil_oportunidades").upsert(rows, { onConflict: "codigo" });
             if (error) throw new Error("No se pudieron guardar las oportunidades idempotentemente");
           }
-          inserted += codes.filter((code) => !prior.has(code)).length;
-          updated += codes.filter((code) => prior.has(code)).length;
+          inserted += rows.filter((row) => !prior.has(String(row.codigo))).length;
+          updated += rows.filter((row) => prior.has(String(row.codigo))).length;
           const reportedPages = payload.paginacion?.total_paginas;
           const hasReportedTotal = Number.isInteger(reportedPages) && Number(reportedPages) > 0;
           totalPages = hasReportedTotal
@@ -411,12 +408,12 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
             const { data: completedState, error } = await db.from("compra_agil_sync_state").update({
               cursor_success: windowTo, window_from: null, window_to: null, next_page: 1, total_pages: null,
               last_success_at: timestamp, last_error: null, lock_until: new Date(Date.now() + 5 * 60_000).toISOString(), updated_at: timestamp,
-            }).eq("region_id", regionId).eq("lock_token", runId).select("region_id").maybeSingle();
+            }).eq("region_id", regionId).eq("lock_token", runId).gt("lock_until", timestamp).select("region_id").maybeSingle();
             if (error || !completedState) throw new Error("No se pudo confirmar el cursor exitoso con el bloqueo vigente");
           } else {
             const { data: progressedState, error } = await db.from("compra_agil_sync_state").update({
               next_page: page + 1, total_pages: totalPages, lock_until: new Date(Date.now() + 5 * 60_000).toISOString(), updated_at: timestamp,
-            }).eq("region_id", regionId).eq("lock_token", runId).select("region_id").maybeSingle();
+            }).eq("region_id", regionId).eq("lock_token", runId).gt("lock_until", timestamp).select("region_id").maybeSingle();
             if (error || !progressedState) throw new Error("No se pudo guardar el punto de continuación con el bloqueo vigente");
           }
           page++;

@@ -8,8 +8,9 @@ begin
   end if;
   if exists (
     select 1 from public.compra_agil_sync_priority_state
-    where cursor_success is not null or window_from is not null or window_to is not null
+    where lock_token is not null or cursor_success is not null or window_from is not null or window_to is not null
        or next_page <> 1 or total_pages is not null or last_success_at is not null
+       or last_attempt_at is not null or last_error is not null
   ) then
     raise exception 'Rollback detenido: existen checkpoints prioritarios; exporte y revise el estado antes de retirar la tabla.';
   end if;

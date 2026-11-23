@@ -2,34 +2,47 @@ import { buildOpportunityRows, runPriorityRegion, type ApiItem, type Checkpoint,
 
 function fixture(pages: Array<{ status?: number; items?: ApiItem[]; total?: number }>) {
   const state: Checkpoint = { region_id: 9, cursor_success: null, window_from: null, window_to: null, next_page: 1, total_pages: null };
-  let locked = false;
+  let lockOwner: string | null = null;
+  let lockUntil = 0;
+  let validatedOwner: string | null = null;
+  const clock = { value: Date.now() };
   const saved: ApiItem[] = [];
   const calls: number[] = [];
+  const requests: Array<{ from: string; to: string; page: number }> = [];
   const repo: PrioritySyncRepository = {
     readCheckpoint: async () => ({ ...state }),
-    acquireRegionLock: async () => { if (locked) return false; locked = true; return true; },
-    startWindow: async (_r, from, to) => { state.window_from = from; state.window_to = to; state.next_page = 1; state.total_pages = null; },
-    saveProgress: async (_r, next, total) => { state.next_page = next; state.total_pages = total; },
-    finishWindow: async (_r, cursor) => { state.cursor_success = cursor; state.window_from = null; state.window_to = null; state.next_page = 1; state.total_pages = null; },
+    acquireRegionLock: async (_r, runId, now, until) => {
+      if (lockOwner && lockUntil > Date.parse(now)) return false;
+      lockOwner = runId; lockUntil = Date.parse(until); validatedOwner = null; return true;
+    },
+    assertRegionLock: async (_r, runId, now, until) => {
+      if (lockOwner !== runId || lockUntil <= Date.parse(now)) return false;
+      lockUntil = Date.parse(until); validatedOwner = runId; return true;
+    },
+    startWindow: async (_r, from, to, runId, timestamp) => { if (lockOwner !== runId || lockUntil <= Date.parse(timestamp)) throw new Error("not owner"); state.window_from = from; state.window_to = to; state.next_page = 1; state.total_pages = null; },
+    saveProgress: async (_r, next, total, runId, timestamp) => { if (lockOwner !== runId || lockUntil <= Date.parse(timestamp)) throw new Error("not owner"); state.next_page = next; state.total_pages = total; },
+    finishWindow: async (_r, cursor, runId, timestamp) => { if (lockOwner !== runId || lockUntil <= Date.parse(timestamp)) throw new Error("not owner"); state.cursor_success = cursor; state.window_from = null; state.window_to = null; state.next_page = 1; state.total_pages = null; },
     recordError: async () => {},
-    releaseRegionLock: async () => { locked = false; },
+    releaseRegionLock: async (_r, runId) => { if (lockOwner === runId) { lockOwner = null; lockUntil = 0; validatedOwner = null; } },
     upsertItems: async (items, timestamp) => {
+      if (!lockOwner || validatedOwner !== lockOwner || lockUntil <= Date.parse(timestamp)) throw new Error("non-owner or expired-lock write attempted");
       const rows = buildOpportunityRows(items, saved, "Región de La Araucanía", timestamp);
       const before = saved.length;
       for (const row of rows) { const index = saved.findIndex((item) => item.codigo === row.codigo); if (index < 0) saved.push(row); else saved[index] = row; }
       return { inserted: saved.length - before, updated: Math.max(0, rows.length - (saved.length - before)) };
     },
   };
-  const fetchPage = async ({ page }: { page: number }) => {
+  const fetchPage = async ({ page, from, to }: { page: number; from: string; to: string; pageSize?: number; regionId?: number }) => {
     calls.push(page);
+    requests.push({ from, to, page });
     const result = pages[page - 1] ?? { items: [] };
     return { ok: (result.status ?? 200) >= 200 && (result.status ?? 200) < 300, status: result.status ?? 200, headers: { get: () => null }, json: async () => ({ success: "OK", payload: { items: result.items ?? [], paginacion: result.total ? { total_paginas: result.total } : undefined } }) };
   };
-  return { state, repo, fetchPage, saved, calls, setLocked: () => { locked = true; } };
+  return { state, repo, fetchPage, saved, calls, requests, clock, setLocked: () => { lockOwner = "other"; lockUntil = clock.value + 60_000; } };
 }
 
 const start = "2026-11-23T15:15:00.000Z";
-const run = (f: ReturnType<typeof fixture>, runId = "run-a", maxPages = 4, remaining = 4) => runPriorityRegion({ regionId: 9, runId, bootstrapFrom: "2026-11-16T03:00:00.000Z", startedAt: start, maxPages, budget: { remaining, consumed: 0 }, repository: f.repo, fetchPage: f.fetchPage, sleep: async () => {} });
+const run = (f: ReturnType<typeof fixture>, runId = "run-a", maxPages = 4, remaining = 4, bootstrapFrom: string | null = "2026-11-16T03:00:00.000Z", bootstrapWindowHours: number | null = null, startedAt = start) => runPriorityRegion({ regionId: 9, runId, bootstrapFrom, bootstrapWindowHours, startedAt, maxPages, budget: { remaining, consumed: 0 }, repository: f.repo, fetchPage: f.fetchPage, sleep: async () => {}, clock: () => f.clock.value });
 
 Deno.test("priority flow accepts the Excel reference code from a mocked official response", async () => {
   const f = fixture([{ items: [{ codigo: "4117-333-COT26", nombre: "mock opportunity", estado: { codigo: "publicada" } }] }]);
@@ -52,8 +65,23 @@ Deno.test("four-page budget stores progress and resumes without repeating comple
   const f = fixture(Array.from({ length: 6 }, (_, i) => ({ items: Array.from({ length: 50 }, (_, j) => ({ codigo: `page-${i + 1}-${j}` })), total: 6 })));
   const first = await run(f, "first", 4, 4);
   if (first.estado !== "parcial_por_limite" || f.state.next_page !== 5 || first.paginas_pendientes !== 2) throw new Error(`partial checkpoint was not retained: ${JSON.stringify({ first, state: f.state, calls: f.calls })}`);
-  const second = await run(f, "second", 4, 4);
-  if (second.estado !== "completada" || f.calls.join(",") !== "1,2,3,4,5,6") throw new Error("resume repeated or lost a page");
+  const savedFrom = f.requests[0].from, savedTo = f.requests[0].to;
+  const second = await run(f, "second", 4, 4, "2026-11-23T00:00:00.000Z", 1);
+  if (second.estado !== "completada" || f.calls.join(",") !== "1,2,3,4,5,6" || f.requests[4].from !== savedFrom || f.requests[4].to !== savedTo || f.requests[4].page !== 5) throw new Error("resume repeated, reset its window, or lost a page");
+});
+
+Deno.test("scheduled first run uses a configurable 48-hour window", async () => {
+  const f = fixture([{ items: [] }]);
+  const result = await run(f, "bootstrap", 4, 4, null, 48);
+  const expectedFrom = new Date(Date.parse(start) - 48 * 60 * 60_000).toISOString();
+  if (result.estado !== "completada" || f.requests[0]?.from !== expectedFrom || f.requests[0]?.to !== start) throw new Error("scheduled bootstrap window was not created from the configured lookback");
+});
+
+Deno.test("an existing successful cursor takes precedence over bootstrap configuration", async () => {
+  const f = fixture([{ items: [] }]);
+  f.state.cursor_success = "2026-11-23T14:00:00.000Z";
+  const result = await run(f, "existing-cursor", 4, 4, "2026-11-01T00:00:00.000Z", 48);
+  if (result.estado !== "completada" || f.requests[0]?.from !== "2026-11-23T13:55:00.000Z") throw new Error("bootstrap reset an existing successful cursor");
 });
 
 Deno.test("HTTP failure and 429 do not advance the checkpoint", async () => {
@@ -73,7 +101,7 @@ Deno.test("network failure does not advance the checkpoint", async () => {
 Deno.test("transient network timeout retries within the request budget", async () => {
   const f = fixture([{ items: [] }]);
   let failures = 2;
-  const result = await runPriorityRegion({ regionId: 9, runId: "retry", bootstrapFrom: "2026-11-16T03:00:00.000Z", startedAt: start, maxPages: 4, budget: { remaining: 4, consumed: 0 }, repository: f.repo, fetchPage: async () => { if (failures-- > 0) throw new Error("timeout"); return await f.fetchPage({ page: 1 }); }, sleep: async () => {} });
+  const result = await runPriorityRegion({ regionId: 9, runId: "retry", bootstrapFrom: "2026-11-16T03:00:00.000Z", startedAt: start, maxPages: 4, budget: { remaining: 4, consumed: 0 }, repository: f.repo, fetchPage: async () => { if (failures-- > 0) throw new Error("timeout"); return await f.fetchPage({ page: 1, from: start, to: start }); }, sleep: async () => {}, clock: () => f.clock.value });
   if (result.estado !== "completada" || result.solicitudes_api !== 3) throw new Error("network retries exceeded budget or failed to resume");
 });
 
@@ -100,4 +128,57 @@ Deno.test("priority window/cursor is independent from a historical checkpoint", 
   const f = fixture([{ items: [] }]);
   const result = await run(f);
   if (result.estado !== "completada" || !f.state.cursor_success || f.state.window_from !== null || historical.cursor_success !== "2026-11-21T12:00:00Z" || historical.next_page !== 17) throw new Error("priority cursor did not finish independently");
+});
+
+Deno.test("expired first owner cannot write after a second run acquires the lease", async () => {
+  const f = fixture([{ items: [{ codigo: "current-owner" }] }]);
+  let markFetchStarted!: () => void;
+  let releaseOldResponse!: (value: Awaited<ReturnType<typeof f.fetchPage>>) => void;
+  const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+  const oldRun = runPriorityRegion({
+    regionId: 9, runId: "old-owner", bootstrapFrom: "2026-11-16T03:00:00.000Z", startedAt: start,
+    maxPages: 4, budget: { remaining: 4, consumed: 0 }, repository: f.repo,
+    fetchPage: async () => { markFetchStarted(); return await new Promise((resolve) => { releaseOldResponse = resolve; }); },
+    sleep: async () => {}, clock: () => f.clock.value,
+  });
+  await fetchStarted;
+  f.clock.value += 6 * 60_000;
+  const newStartedAt = new Date(f.clock.value).toISOString();
+  const newRun = await run(f, "new-owner", 4, 4, null, 48, newStartedAt);
+  if (newRun.estado !== "completada" || f.saved.length !== 1 || f.saved[0].codigo !== "current-owner") throw new Error("second owner failed to finish while holding the new lease");
+  const finishedCursor = f.state.cursor_success;
+  releaseOldResponse(await f.fetchPage({ page: 1, from: start, to: start }));
+  const oldResult = await oldRun;
+  if (oldResult.estado !== "error" || f.saved.length !== 1 || f.state.cursor_success !== finishedCursor) throw new Error("expired owner wrote opportunities or changed the current checkpoint");
+});
+
+Deno.test("historical older source data cannot replace a priority snapshot", () => {
+  const priority = buildOpportunityRows([{
+    codigo: "shared-code", nombre: "Newest name", estado: { codigo: "publicada" },
+    fechas: { fecha_ultimo_cambio: "2026-11-23T15:14:00.000Z", fecha_cierre: "2026-11-25T18:00:00.000Z" },
+    montos: { monto_disponible_clp: 500 },
+  }], [], "Araucanía", "2026-11-23T15:15:00.000Z", "priority");
+  const historical = buildOpportunityRows([{
+    codigo: "shared-code", nombre: "Older name", estado: { codigo: "publicada" },
+    fechas: { fecha_ultimo_cambio: "2026-11-22T15:14:00.000Z" },
+    montos: { monto_disponible_clp: 100 },
+  }], priority, "Araucanía", "2026-11-23T16:00:00.000Z", "historical");
+  if (historical.length !== 0 || priority[0].nombre !== "Newest name" || priority[0].monto_estimado !== 500 || priority[0].ultima_revision !== "2026-11-23T15:15:00.000Z") throw new Error("historical response overwrote a newer priority snapshot");
+});
+
+Deno.test("newer source revisions merge incomplete fields and keep source/query times distinct", () => {
+  const old = [{
+    codigo: "merge-code", nombre: "Existing name", descripcion: "manual", primera_deteccion: "2026-11-20T00:00:00.000Z",
+    ultima_revision: "2026-11-23T15:00:00.000Z", monto_estimado: 500, fecha_cierre: "2026-11-25T18:00:00.000Z",
+    datos_originales: { fechas: { fecha_ultimo_cambio: "2026-11-23T14:00:00.000Z", fecha_cierre: "2026-11-25T18:00:00.000Z" }, montos: { monto_disponible_clp: 500 }, detail: { keep: "value" } },
+  }];
+  const rows = buildOpportunityRows([{
+    codigo: "merge-code", nombre: "", fechas: { fecha_ultimo_cambio: "2026-11-23T15:30:00.000Z" },
+    detail: { add: "value" },
+  }], old, "Araucanía", "2026-11-23T15:31:00.000Z", "priority");
+  if (rows.length !== 1 || rows[0].nombre !== "Existing name" || rows[0].monto_estimado !== 500 || rows[0].fecha_cierre !== old[0].fecha_cierre || rows[0].descripcion !== "manual" || rows[0].primera_deteccion !== old[0].primera_deteccion || rows[0].ultima_revision !== "2026-11-23T15:31:00.000Z") throw new Error("incomplete response erased existing values or query time was lost");
+  const original = rows[0].datos_originales as Record<string, unknown>;
+  const detail = original.detail as Record<string, unknown>;
+  const dates = original.fechas as Record<string, unknown>;
+  if (detail.keep !== "value" || detail.add !== "value" || dates.fecha_ultimo_cambio !== "2026-11-23T15:30:00.000Z") throw new Error("source fields were not recursively preserved/merged");
 });
