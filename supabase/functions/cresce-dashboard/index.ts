@@ -1,4 +1,11 @@
 import { withSupabase } from "npm:@supabase/server@1";
+import {
+  classifyOpportunity,
+  filterRadarOpportunities,
+  normalizeRegionKey,
+  santiagoDayAfterStartIso,
+  santiagoDayStartIso,
+} from "../_shared/compra-agil-radar.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -32,22 +39,7 @@ function text(value: unknown, max = 120) {
 }
 
 function normalizeRegion(value: unknown) {
-  const normalized = text(value, 100)
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "")
-    .toLocaleLowerCase("es")
-    .replace(/^region\s+(de|del)\s+/u, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  const aliases: Record<string, string> = {
-    "la araucania": "araucania", "metropolitana de santiago": "metropolitana",
-    santiago: "metropolitana", "ohiggins": "o'higgins",
-    "libertador general bernardo o'higgins": "o'higgins",
-    "aysen del general carlos ibanez del campo": "aysen",
-    "magallanes y la antartica": "magallanes",
-    "magallanes y de la antartica chilena": "magallanes",
-  };
-  return aliases[normalized] ?? normalized;
+  return normalizeRegionKey(text(value, 100));
 }
 
 const OFFICIAL_REGIONS: Record<string, string> = {
@@ -125,7 +117,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
 
   if (input.consulta === "resumen") {
     const now = new Date().toISOString();
-    const [allCount, regions, executions, lastSuccessResult, syncStateResult, partialResult] = await Promise.all([
+    const [allCount, regions, executions, lastSuccessResult, syncStateResult, partialResult, priorityStateResult] = await Promise.all([
       db.from("compra_agil_oportunidades").select("codigo", {
         count: "exact",
         head: true,
@@ -141,6 +133,7 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       db.from("compra_agil_ejecuciones").select("termino").eq("estado", "completada").not("termino", "is", null).order("termino", { ascending: false }).limit(1).maybeSingle(),
       db.from("compra_agil_sync_state").select("region_id, cursor_success, window_from, window_to, next_page, total_pages, lock_until, last_success_at, last_attempt_at, last_error").order("last_attempt_at", { ascending: false, nullsFirst: false }).limit(16),
       db.from("compra_agil_ejecuciones").select("inicio, termino, estado, oportunidades_encontradas, oportunidades_nuevas, error_detalle").eq("estado", "parcial_por_limite").order("inicio", { ascending: false }).limit(1).maybeSingle(),
+      db.from("compra_agil_sync_priority_state").select("region_id, cursor_success, window_from, window_to, next_page, total_pages, last_success_at, last_attempt_at, last_error").order("last_attempt_at", { ascending: false, nullsFirst: false }).limit(2),
     ]);
     const error = allCount.error ?? regions.error ?? executions.error ??
       lastSuccessResult.error;
@@ -156,27 +149,23 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       return reply({ error: "No se pudo verificar la actualidad de las oportunidades" }, 500);
     }
     const nowMs = Date.now();
-    const dateStatus = (row: Record<string, unknown>) => {
-      const raw = row.fecha_cierre;
-      if (typeof raw !== "string" || !/(Z|[+-]\d{2}:\d{2})$/i.test(raw)) return "no_verificable";
-      const timestamp = Date.parse(raw);
-      if (!Number.isFinite(timestamp)) return "no_verificable";
-      if (timestamp <= nowMs) return "vencida";
-      const original = isRecord(row.datos_originales) ? row.datos_originales : {};
-      const originalState = isRecord(original.estado) ? original.estado.codigo : null;
-      const state = text(row.estado ?? originalState, 40).toLocaleLowerCase("es");
-      const lastChecked = typeof row.ultima_revision === "string" ? Date.parse(row.ultima_revision) : NaN;
-      const recent = Number.isFinite(lastChecked) && lastChecked <= nowMs + 30_000 && nowMs - lastChecked <= 24 * 60 * 60 * 1000;
-      return state === "publicada" && recent ? "abierta_confirmada" : "no_verificable";
-    };
+    const dateStatus = (row: Record<string, unknown>) => classifyOpportunity(row, nowMs);
     const opportunityRows = opportunityDates.rows;
     const lastSuccessful = lastSuccessResult.data;
     const syncStates = syncStateResult.error ? [] : syncStateResult.data ?? [];
     const latestCheckpointSuccess = syncStates.map((row) => row.last_success_at)
       .filter((value): value is string => typeof value === "string")
       .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
-    const latestSuccessAt = latestCheckpointSuccess ?? lastSuccessful?.termino ?? null;
+    const latestPrioritySuccess = (priorityStateResult.error ? [] : priorityStateResult.data ?? [])
+      .map((row) => row.last_success_at).filter((value): value is string => typeof value === "string")
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+    const latestSuccessAt = [latestCheckpointSuccess, lastSuccessful?.termino ?? null, latestPrioritySuccess]
+      .filter((value): value is string => typeof value === "string")
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
     const pendingCheckpoints = syncStates.filter((row) => row.window_from && row.window_to)
+      .map((row) => ({ region_id: row.region_id, window_from: row.window_from, window_to: row.window_to, next_page: row.next_page, total_pages: row.total_pages, last_error: row.last_error }));
+    const priorityCheckpoints = priorityStateResult.error ? [] : (priorityStateResult.data ?? [])
+      .filter((row) => row.window_from && row.window_to)
       .map((row) => ({ region_id: row.region_id, window_from: row.window_from, window_to: row.window_to, next_page: row.next_page, total_pages: row.total_pages, last_error: row.last_error }));
     const inProgressCheckpoints = syncStates.filter((row) => row.lock_until && Date.parse(row.lock_until) > nowMs);
     const latestPartial = partialResult.error ? null : partialResult.data;
@@ -215,17 +204,21 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       oportunidades: allCount.count ?? 0,
       cierres_futuros_verificables: opportunityRows.filter((row) => dateStatus(row) === "abierta_confirmada").length,
       abiertas_confirmadas: opportunityRows.filter((row) => dateStatus(row) === "abierta_confirmada").length,
+      cierres_futuros_pendientes_verificar: opportunityRows.filter((row) => dateStatus(row) === "cierre_futuro_pendiente_verificar").length,
       vencidas: opportunityRows.filter((row) => dateStatus(row) === "vencida").length,
       fecha_no_verificable: opportunityRows.filter((row) => dateStatus(row) === "no_verificable").length,
       vigencia_parcial: opportunityDates.parcial,
       ultima_sincronizacion_exitosa: latestSuccessAt,
+      ultima_sincronizacion_prioritaria_exitosa: latestPrioritySuccess,
       ultima_ejecucion: executions.data?.[0] ?? null,
       ultimo_avance_parcial: latestPartial,
       checkpoints_disponibles: !syncStateResult.error,
       regiones_pendientes: pendingCheckpoints,
+      prioridad_regiones_pendientes: priorityCheckpoints,
+      prioridad_checkpoints_disponibles: !priorityStateResult.error,
       regiones_en_progreso: inProgressCheckpoints.map((row) => ({ region_id: row.region_id, lock_until: row.lock_until })),
       ejecucion_en_progreso: Boolean(inProgressCheckpoints.length || (executions.data?.[0]?.estado === "iniciada" && nowMs - Date.parse(String(executions.data[0].inicio)) < 5 * 60 * 1000)),
-      paginas_pendientes: pendingCheckpoints.reduce((sum, row) => sum + Math.max(1, Number(row.total_pages ?? row.next_page) - Number(row.next_page) + 1), 0),
+      paginas_pendientes: pendingCheckpoints.some((row) => row.total_pages == null) ? null : pendingCheckpoints.reduce((sum, row) => sum + Math.max(0, Number(row.total_pages) - Number(row.next_page) + 1), 0),
       sincronizacion_antigua: !latestSuccessAt || nowMs - Date.parse(String(latestSuccessAt)) > 24 * 60 * 60 * 1000,
       compras_por_region: [...counts.values()].sort((a, b) =>
         b.cantidad - a.cantidad
@@ -268,6 +261,14 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     if (to && !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
       return reply({ error: "Fecha final inválida" }, 400);
     }
+    if (from && to && from > to) return reply({ error: "El inicio del periodo debe ser anterior o igual al final" }, 400);
+    let fromIso: string | null = null, toExclusiveIso: string | null = null;
+    try {
+      if (from) fromIso = santiagoDayStartIso(from);
+      if (to) toExclusiveIso = santiagoDayAfterStartIso(to);
+    } catch {
+      return reply({ error: "La fecha seleccionada no existe en el calendario" }, 400);
+    }
     if (
       (min !== null && (!Number.isFinite(min) || min < 0)) ||
       (max !== null && (!Number.isFinite(max) || max < 0)) ||
@@ -283,17 +284,8 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
         )
         .order(sort, { ascending, nullsFirst: false })
         .order("codigo", { ascending: true });
-      if (from) {
-        request = request.gte(
-          "fecha_publicacion",
-          `${from}T00:00:00.000Z`,
-        );
-      }
-      if (to) {
-        const dayAfter = new Date(`${to}T00:00:00.000Z`);
-        dayAfter.setUTCDate(dayAfter.getUTCDate() + 1);
-        request = request.lt("fecha_publicacion", dayAfter.toISOString());
-      }
+      if (from) request = request.gte("fecha_publicacion", fromIso!);
+      if (to) request = request.lt("fecha_publicacion", toExclusiveIso!);
       if (min !== null) request = request.gte("monto_estimado", min);
       if (max !== null) request = request.lte("monto_estimado", max);
       const safeQuery = query.replace(/[,*()%_\\]/g, " ").trim();
@@ -311,33 +303,20 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       );
     }
 
-    const onlyCurrent = input.solo_vigentes === true;
     const currentTime = Date.now();
-    const opportunityStatus = (row: Record<string, unknown>) => {
-      const closing = row.fecha_cierre;
-      if (typeof closing !== "string" || !/(Z|[+-]\d{2}:\d{2})$/i.test(closing) || !Number.isFinite(Date.parse(closing))) return "no_verificable";
-      if (Date.parse(closing) <= currentTime) return "vencida";
-      const original = isRecord(row.datos_originales) ? row.datos_originales : {};
-      const originalState = isRecord(original.estado) ? original.estado.codigo : null;
-      const state = text(row.estado ?? originalState, 40).toLocaleLowerCase("es");
-      const checked = typeof row.ultima_revision === "string" ? Date.parse(row.ultima_revision) : NaN;
-      const recent = Number.isFinite(checked) && checked <= currentTime + 30_000 && currentTime - checked <= 24 * 60 * 60 * 1000;
-      return state === "publicada" && recent ? "abierta_confirmada" : "no_verificable";
-    };
-    const isConfirmedOpen = (row: Record<string, unknown>) => opportunityStatus(row) === "abierta_confirmada";
-
-    const regionKey = normalizeRegion(region);
-    let rows = regionKey
-      ? result.rows.filter((row) => normalizeRegion(row.region) === regionKey)
-      : result.rows;
-    if (onlyCurrent) rows = rows.filter(isConfirmedOpen);
+    const rows = filterRadarOpportunities(
+      result.rows,
+      region,
+      input.solo_vigentes === true,
+      currentTime,
+    );
     const totalFiltrado = rows.length;
     const limit = 25;
     const items = rows.slice((page - 1) * limit, page * limit);
     return reply({
       items: items.map((row) => ({
         ...row,
-        vigencia: opportunityStatus(row),
+        vigencia: classifyOpportunity(row, currentTime),
       })),
       total: totalFiltrado,
       pagina: page,
