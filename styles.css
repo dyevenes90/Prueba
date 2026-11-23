@@ -2881,3 +2881,35 @@ body:not(:has(.cresce-holding)) .cresce-sync-compact #ca-sync {
   body:not(:has(.cresce-holding)) .ca-workspace .ca-detail-panel { padding:16px; }
   body:not(:has(.cresce-holding)) .ca-workspace .ca-filters { padding:16px 13px; }
 }
+
+/* Ajustes de marca para todas las áreas internas. */
+body:not(:has(.cresce-holding)) .cresce-mini-logo { width:46px; height:46px; animation:cresce-mark-turn 56s linear infinite; }
+body:not(:has(.cresce-holding)) .area-shortcut .shortcut-visual,
+body:not(:has(.cresce-holding)) .area-shortcut .shortcut-visual img { width:42px; height:42px; }
+body:not(:has(.cresce-holding)) .shortcut-visual::before {
+  inset:-16px;
+  background:radial-gradient(ellipse at center,#f0ca8a9c 0,#d5a65775 34%,#bd843d40 58%,transparent 78%);
+  filter:blur(8px);
+}
+body:not(:has(.cresce-holding)) .area-shortcut[aria-current="page"] .shortcut-visual::before { opacity:.84; }
+body:not(:has(.cresce-holding)) .area-shortcut:is(:hover,:focus-visible,[aria-current="page"]) .shortcut-visual img {
+  filter:brightness(1.42) contrast(1.1) drop-shadow(0 1px 6px #e4bd777d);
+}
+body:not(:has(.cresce-holding)) .ca-sync-controls.cresce-sync-compact { flex-wrap:wrap; }
+body:not(:has(.cresce-holding)) .cresce-sync-compact .ca-sync-result {
+  flex:1 0 100%;
+  max-width:100%;
+  padding:7px 10px;
+  border-radius:8px;
+  font-size:11px;
+  line-height:1.4;
+  text-align:right;
+}
+@media (max-width:640px) {
+  body:not(:has(.cresce-holding)) .cresce-mini-logo { width:38px; height:38px; }
+  body:not(:has(.cresce-holding)) .area-shortcut .shortcut-visual,
+  body:not(:has(.cresce-holding)) .area-shortcut .shortcut-visual img { width:38px; height:38px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  body:not(:has(.cresce-holding)) .cresce-mini-logo { animation:none; }
+}
