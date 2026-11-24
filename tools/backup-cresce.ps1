@@ -147,6 +147,7 @@ try {
         ssl_mode = 'require'
         connection_type = 'Supabase Session Pooler (recommended; host omitted)'
         tools = [ordered]@{ pg_dump = $dumpVersion; pg_restore = $restoreVersion; psql = $psqlVersion }
+        checkpoint_tables = [ordered]@{ historical = 'present'; priority = if ($priorityExists) { 'present' } else { 'absent' } }
         backup = [ordered]@{ file = [IO.Path]::GetFileName($backupPath); bytes = $item.Length; sha256 = $sha; pg_restore_list_valid = $true; archive_entries = (@($archiveEntries -split "`r?`n" | Where-Object { $_.Trim() }).Count) }
         before = $before
         after = $after
