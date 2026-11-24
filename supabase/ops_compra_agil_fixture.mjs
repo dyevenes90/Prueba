@@ -5,18 +5,21 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { formatChangeWindowForApi, parseSourceDate, sourceModifiedAt } from "./functions/_shared/compra-agil-sync-engine.ts";
 import { classifyOpportunity } from "./functions/_shared/compra-agil-radar.ts";
 
+async function main() {
 const args = parseArgs(process.argv.slice(2));
-const regionId = Number(args.region ?? 9);
-const page = Number(args.page ?? 1);
-const pageSize = Number(args["page-size"] ?? 10);
+let regionId = Number(args.region ?? 9);
+let page = Number(args.page ?? 1);
+let pageSize = Number(args["page-size"] ?? 10);
 if (![9, 14].includes(regionId) || page !== 1 || pageSize !== 10) {
   fail("Solo se admite una muestra pequeña: región 9 o 14, página 1, tamaño 10.");
 }
 
 let body;
+let fixture;
 let requestCount = 0;
 let windowFrom;
 let windowTo;
@@ -25,7 +28,7 @@ if (args.fetch === "true") {
   if (!ticket) {
     console.error("No se encontró MERCADOPUBLICO_TICKET; no se hizo ninguna solicitud.");
     console.error("PowerShell: $secure = Read-Host 'Ticket ChileCompra' -AsSecureString; $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); try { $env:MERCADOPUBLICO_TICKET = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr); node --experimental-strip-types ./supabase/ops_compra_agil_fixture.mjs --fetch --output ./supabase/tests/fixtures/compra-agil-real-page.json } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); Remove-Item Env:MERCADOPUBLICO_TICKET -ErrorAction SilentlyContinue; $secure.Dispose() }");
-    process.exit(2);
+    fail("No se inicia el modo --fetch sin MERCADOPUBLICO_TICKET.");
   }
   const hours = Number(args.hours ?? 48);
   if (!Number.isInteger(hours) || hours < 1 || hours > 48) fail("--hours debe ser entero entre 1 y 48.");
@@ -46,56 +49,113 @@ if (args.fetch === "true") {
 } else {
   if (!args.input) fail("Indica --input <respuesta-api.json> o --fetch.");
   body = JSON.parse(await readFile(resolve(args.input), "utf8"));
-  windowFrom = args["window-from"];
-  windowTo = args["window-to"];
-  if (!validInstant(windowFrom) || !validInstant(windowTo)) {
-    fail("Para una muestra guardada indica --window-from y --window-to con los límites ISO-8601 originales de la consulta.");
+  if (body?.schema === "cresce.compra-agil.real-page.v1") {
+    fixture = validateFixture(body);
+    regionId = fixture.regionId;
+    page = fixture.page;
+    pageSize = fixture.pageSize;
+    windowFrom = fixture.windowFrom;
+    windowTo = fixture.windowTo;
+  } else {
+    windowFrom = args["window-from"];
+    windowTo = args["window-to"];
+    if (!validInstant(windowFrom) || !validInstant(windowTo)) {
+      fail("Para una respuesta API original indica --window-from y --window-to ISO-8601.");
+    }
   }
 }
 
-const rawItems = body?.payload?.items;
-if (!Array.isArray(rawItems) || rawItems.length > pageSize) fail("La respuesta no contiene una página válida de hasta diez oportunidades.");
-const totalPagesRaw = body?.payload?.paginacion?.total_paginas;
-const totalPages = Number.isInteger(Number(totalPagesRaw)) && Number(totalPagesRaw) > 0 ? Number(totalPagesRaw) : null;
-const capturedAt = new Date().toISOString();
-const seen = new Set();
-const items = rawItems.map((item) => sanitizeItem(item)).filter((item) => {
-  if (seen.has(item.codigo)) return false;
-  seen.add(item.codigo);
-  return true;
-});
-if (!items.length) fail("La respuesta no contiene códigos válidos de Compra Ágil.");
+if (!fixture) fixture = buildFixtureFromApiBody(body, { regionId, page, pageSize, windowFrom, windowTo });
 
-const fixture = {
-  schema: "cresce.compra-agil.real-page.v1",
-  regionId,
-  page,
-  pageSize,
-  totalPages,
-  windowFrom,
-  windowTo,
-  capturedAt,
-  items,
-};
-const output = resolve(args.output ?? "supabase/tests/fixtures/compra-agil-real-page.json");
-try {
-  await access(output);
-  if (args.overwrite !== "true") fail("El fixture de salida ya existe; elige otra ruta o indica --overwrite para reemplazarlo.");
-} catch (error) {
-  if (error?.code !== "ENOENT") throw error;
+const inputPath = args.input ? resolve(args.input) : null;
+const explicitOutput = typeof args.output === "string" && args.output !== "true";
+const output = resolve(args.output && explicitOutput ? args.output : "supabase/tests/fixtures/compra-agil-real-page.json");
+const reuseFixtureOffline = Boolean(inputPath && body?.schema === "cresce.compra-agil.real-page.v1");
+const writeOutput = shouldWriteFixture({ reuseFixtureOffline, explicitOutput });
+if (writeOutput) {
+  try { assertDistinctOutput(inputPath, output); } catch (error) { fail(error.message); }
+  try {
+    await access(output);
+    if (args.overwrite !== "true") fail("El fixture de salida ya existe; elige otra ruta o indica --overwrite para reemplazarlo.");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  await mkdir(dirname(output), { recursive: true });
+  await writeFile(output, JSON.stringify(fixture, null, 2) + "\n", { encoding: "utf8", flag: "w" });
+  console.log(`Fixture saneado: ${output}`);
+} else {
+  console.log(`Fixture saneado reutilizado sin reescritura: ${inputPath}`);
 }
-await mkdir(dirname(output), { recursive: true });
-await writeFile(output, JSON.stringify(fixture, null, 2) + "\n", { encoding: "utf8", flag: "w" });
 printComparison(fixture);
-console.log(`Fixture saneado: ${output}`);
 console.log(`Solicitudes API consumidas: ${requestCount}`);
 if (args.postgres === "true") {
-  if (!totalPages) fail("La API no informó paginación total; no se puede afirmar si esta página es final ni probar el avance SQL con seguridad.");
+  if (!fixture.totalPages) fail("La API no informó paginación total; no se puede afirmar si esta página es final ni probar el avance SQL con seguridad.");
   const sql = buildPostgresSql(fixture);
   const result = spawnSync("psql", ["-X", "-v", "ON_ERROR_STOP=1"], { input: sql, encoding: "utf8", stdio: ["pipe", "inherit", "inherit"] });
   if (result.error) fail(`No se pudo ejecutar psql: ${result.error.message}`);
   if (result.status !== 0) process.exit(result.status ?? 1);
   console.log("Prueba PostgreSQL aislada con ambos modos: aprobada.");
+}
+}
+
+export function validateFixture(value) {
+  assertOnlyKeys(value, ["schema", "regionId", "page", "pageSize", "totalPages", "windowFrom", "windowTo", "capturedAt", "items"], "fixture");
+  if (value.schema !== "cresce.compra-agil.real-page.v1") fail("El esquema del fixture no es compatible.");
+  if (![9, 14].includes(value.regionId) || value.page !== 1 || value.pageSize !== 10) fail("El fixture debe ser página 1, tamaño 10 y región 9 o 14.");
+  if (value.totalPages !== null && (!Number.isInteger(value.totalPages) || value.totalPages < 1 || value.totalPages < value.page)) fail("El fixture debe incluir totalPages válido o null.");
+  for (const field of ["windowFrom", "windowTo", "capturedAt"]) {
+    if (!validInstant(value[field])) fail(`El fixture contiene ${field} inválido.`);
+  }
+  if (Date.parse(value.windowFrom) > Date.parse(value.windowTo)) fail("La ventana del fixture está invertida.");
+  if (!Array.isArray(value.items) || value.items.length < 1 || value.items.length > value.pageSize) fail("El fixture debe contener entre 1 y 10 oportunidades.");
+  const seen = new Set();
+  const items = value.items.map((item, index) => {
+    const prefix = `items[${index}]`;
+    assertOnlyKeys(item, ["codigo", "estado", "institucion", "fechas", "montos"], prefix);
+    assertOnlyKeys(item.estado, ["codigo", "glosa"], `${prefix}.estado`);
+    assertOnlyKeys(item.institucion, ["region", "nombre_region"], `${prefix}.institucion`);
+    assertOnlyKeys(item.fechas, ["fecha_publicacion", "fecha_cierre", "fecha_ultimo_cambio"], `${prefix}.fechas`);
+    assertOnlyKeys(item.montos, ["monto_disponible_clp"], `${prefix}.montos`);
+    const safe = sanitizeItem(item);
+    if (safe.institucion.region !== undefined && safe.institucion.region !== value.regionId) {
+      fail(`La oportunidad ${safe.codigo} no corresponde a la región del fixture.`);
+    }
+    if (seen.has(safe.codigo)) fail(`El fixture contiene el código duplicado ${safe.codigo}.`);
+    seen.add(safe.codigo);
+    return safe;
+  });
+  return { ...value, items };
+}
+
+export function shouldWriteFixture({ reuseFixtureOffline, explicitOutput }) {
+  return !reuseFixtureOffline || explicitOutput;
+}
+
+export function assertDistinctOutput(inputPath, outputPath) {
+  if (inputPath && resolve(inputPath).toLowerCase() === resolve(outputPath).toLowerCase()) {
+    throw new Error("La salida no puede sobrescribir el archivo de entrada; elige otra ruta.");
+  }
+}
+
+export function buildFixtureFromApiBody(body, { regionId, page, pageSize, windowFrom, windowTo, capturedAt = new Date().toISOString() }) {
+  const rawItems = body?.payload?.items;
+  if (!Array.isArray(rawItems) || rawItems.length > pageSize) fail("La respuesta no contiene una página válida de hasta diez oportunidades.");
+  const rawTotalPages = body?.payload?.paginacion?.total_paginas;
+  const totalPages = Number.isInteger(Number(rawTotalPages)) && Number(rawTotalPages) > 0 ? Number(rawTotalPages) : null;
+  const seen = new Set();
+  const items = rawItems.map((item) => sanitizeItem(item)).filter((item) => {
+    if (seen.has(item.codigo)) return false;
+    seen.add(item.codigo);
+    return true;
+  });
+  if (!items.length) fail("La respuesta no contiene códigos válidos de Compra Ágil.");
+  return validateFixture({ schema: "cresce.compra-agil.real-page.v1", regionId, page, pageSize, totalPages, windowFrom, windowTo, capturedAt, items });
+}
+
+function assertOnlyKeys(value, allowed, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${label} debe ser un objeto válido.`);
+  const unexpected = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unexpected) fail(`${label} contiene un campo no permitido: ${unexpected}.`);
 }
 
 function sanitizeItem(item) {
@@ -189,6 +249,7 @@ function printComparison(value) {
 function buildPostgresSql(value) {
   const jsonLiteral = JSON.stringify(value).replaceAll("'", "''");
   return `\\set ON_ERROR_STOP on
+SET ROLE service_role;
 BEGIN;
 CREATE TEMP TABLE ca_real_fixture (body jsonb);
 INSERT INTO ca_real_fixture VALUES (:'fixture_json'::jsonb);
@@ -204,6 +265,7 @@ DECLARE
   result jsonb;
   expected_count integer;
   actual_count integer;
+  expected_next_page integer;
   is_complete boolean;
   old_mode text;
 BEGIN
@@ -214,6 +276,7 @@ BEGIN
   DELETE FROM public.compra_agil_sync_observations WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
   DELETE FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
   is_complete := (f->>'page')::integer >= (f->>'totalPages')::integer;
+  expected_next_page := CASE WHEN is_complete THEN 1 ELSE (f->>'page')::integer + 1 END;
   FOREACH mode IN ARRAY ARRAY['strict_utc','chile_wall_z'] LOOP
     -- This reset is confined to the disposable CI transaction. Production never
     -- switches an in-progress checkpoint; the RPC below verifies the pinned mode.
@@ -238,6 +301,9 @@ BEGIN
     IF (result->>'inserted')::integer <> expected_count THEN RAISE EXCEPTION 'RPC no guardó todos los códigos únicos para %', mode; END IF;
     SELECT count(*) INTO actual_count FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
     IF actual_count <> expected_count THEN RAISE EXCEPTION 'La muestra tiene duplicados o registros perdidos para %', mode; END IF;
+    IF (SELECT next_page FROM public.compra_agil_sync_priority_state WHERE region_id=(f->>'regionId')::smallint) <> expected_next_page THEN
+      RAISE EXCEPTION 'El checkpoint no avanzó la página de forma coherente';
+    END IF;
     -- Replaying the same first page is an idempotent update, not another row.
     UPDATE public.compra_agil_sync_state SET lock_until=clock_timestamp()+interval '5 minutes' WHERE region_id=(f->>'regionId')::smallint;
     UPDATE public.compra_agil_sync_priority_state SET window_from=(f->>'windowFrom')::timestamptz, window_to=(f->>'windowTo')::timestamptz,
@@ -257,6 +323,7 @@ BEGIN
   END IF;
 END $$;
 ROLLBACK;
+RESET ROLE;
 `.replace("INSERT INTO ca_real_fixture VALUES (:'fixture_json'::jsonb);", `INSERT INTO ca_real_fixture VALUES ('${jsonLiteral}'::jsonb);`);
 }
 
@@ -271,4 +338,13 @@ function parseArgs(argv) {
   }
   return parsed;
 }
-function fail(message) { console.error(message); process.exit(2); }
+function fail(message) { throw new Error(message); }
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  try {
+    await main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "Error al procesar la muestra Compra Ágil.");
+    process.exitCode = 2;
+  }
+}

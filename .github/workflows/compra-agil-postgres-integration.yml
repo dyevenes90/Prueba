@@ -32,6 +32,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Validate offline Compra Ágil fixture tool
+        run: node supabase/ops_compra_agil_fixture_test.mjs
       - name: Apply migrations and run PostgreSQL assertions
         env:
           PGHOST: localhost

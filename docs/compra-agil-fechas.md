@@ -32,6 +32,14 @@ try {
 }
 ```
 
-El comando hace una solicitud. Si ya existe el JSON de respuesta, use `--input <archivo>` y proporcione `--window-from` y `--window-to` originales para no consumir cuota otra vez. Revise el fixture saneado antes de incluirlo en la rama de revisión. Actions lo detecta y ejecuta la misma página contra PostgreSQL efímero en ambos modos, verificando clasificación/paginación, rechazo de cambio de modo, idempotencia, duplicados y conservación del checkpoint histórico; toda la transacción termina en rollback.
+El comando hace una solicitud. Si ya existe el JSON de respuesta original de la API, use `--input <archivo>` y proporcione `--window-from` y `--window-to` originales para no consumir cuota otra vez. Revise el fixture saneado antes de incluirlo en la rama de revisión.
+
+Para reutilizar offline el fixture saneado (ya contiene ventana y paginación), no se consulta la API ni se reescribe el archivo:
+
+```powershell
+node --experimental-strip-types .\supabase\ops_compra_agil_fixture.mjs --input .\supabase\tests\fixtures\compra-agil-real-page.json --postgres
+```
+
+Actions lo detecta y ejecuta la misma página contra PostgreSQL efímero en ambos modos, verificando clasificación/paginación, rechazo de cambio de modo, idempotencia, duplicados y conservación del checkpoint histórico; toda la transacción termina en rollback. `--postgres` usa la conexión aislada configurada en el runner y no requiere el ticket de ChileCompra.
 
 Sin un snapshot previo almacenado, el comparador puede mostrar si el cambio queda después de la publicación en cada modo, pero no afirmar que la oportunidad se actualizó respecto a CRESCE.
