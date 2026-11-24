@@ -260,6 +260,8 @@ function buildPostgresSql(value) {
     const token = `00000000-0000-4000-8000-00000000002${i + 1}`;
     const previousMode = mode === "strict_utc" ? "chile_wall_z" : "strict_utc";
     const setState = `UPDATE public.compra_agil_sync_state SET lock_token='${token}', lock_until=clock_timestamp()+interval '5 minutes' WHERE region_id=${region};
+DELETE FROM public.compra_agil_sync_observations WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(${items}) x);
+DELETE FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(${items}) x);
 UPDATE public.compra_agil_sync_priority_state SET lock_token='${token}', window_from='${value.windowFrom}'::timestamptz, window_to='${value.windowTo}'::timestamptz, next_page=${page}, total_pages=${total}, date_mode='${mode}' WHERE region_id=${region};`;
     const rpc = `public.compra_agil_sync_commit_page_with_mode('priority',${region}::smallint,'${token}'::uuid,${page},${total},${complete},${windowTo},${items},'${mode}')`;
     return `${setState}
