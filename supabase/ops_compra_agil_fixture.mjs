@@ -247,84 +247,68 @@ function printComparison(value) {
 }
 
 function buildPostgresSql(value) {
-  const jsonLiteral = JSON.stringify(value).replaceAll("'", "''");
+  const region = value.regionId;
+  const page = value.page;
+  const total = value.totalPages;
+  const windowTo = `'${value.windowTo.replaceAll("'", "''")}'::timestamptz`;
+  const items = `'${JSON.stringify(value.items).replaceAll("'", "''")}'::jsonb`;
+  const complete = page >= total;
+  const nextPage = complete ? 1 : page + 1;
+  const expected = value.items.length;
+  const modes = ["strict_utc", "chile_wall_z"];
+  const modeSql = modes.map((mode, i) => {
+    const token = `00000000-0000-4000-8000-00000000002${i + 1}`;
+    const previousMode = mode === "strict_utc" ? "chile_wall_z" : "strict_utc";
+    const setState = `UPDATE public.compra_agil_sync_state SET lock_token='${token}', lock_until=clock_timestamp()+interval '5 minutes' WHERE region_id=${region};
+UPDATE public.compra_agil_sync_priority_state SET lock_token='${token}', window_from='${value.windowFrom}'::timestamptz, window_to='${value.windowTo}'::timestamptz, next_page=${page}, total_pages=${total}, date_mode='${mode}' WHERE region_id=${region};`;
+    const rpc = `public.compra_agil_sync_commit_page_with_mode('priority',${region}::smallint,'${token}'::uuid,${page},${total},${complete},${windowTo},${items},'${mode}')`;
+    return `${setState}
+DO $$ BEGIN
+  BEGIN
+    PERFORM public.compra_agil_sync_commit_page_with_mode('priority',${region}::smallint,'${token}'::uuid,${page},${total},${complete},${windowTo},${items},'${previousMode}');
+    RAISE EXCEPTION 'RPC permitió cambiar modo durante ventana activa';
+  EXCEPTION WHEN SQLSTATE '40001' THEN NULL;
+  END;
+  IF EXISTS (SELECT 1 FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(${items}) x)) THEN
+    RAISE EXCEPTION 'El rechazo del modo alternativo dejó escrituras';
+  END IF;
+END $$;
+SET LOCAL ROLE service_role;
+SELECT ${rpc};
+RESET ROLE;
+DO $$ BEGIN
+  IF (SELECT count(*) FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(${items}) x)) <> ${expected} THEN RAISE EXCEPTION 'La RPC perdió o duplicó registros'; END IF;
+  IF (SELECT next_page FROM public.compra_agil_sync_priority_state WHERE region_id=${region}) <> ${nextPage} THEN RAISE EXCEPTION 'El checkpoint no avanzó a la página esperada'; END IF;
+END $$;
+-- Repetir la página en el entorno desechable prueba idempotencia de la RPC.
+UPDATE public.compra_agil_sync_state SET lock_until=clock_timestamp()+interval '5 minutes' WHERE region_id=${region};
+UPDATE public.compra_agil_sync_priority_state SET window_from='${value.windowFrom}'::timestamptz, window_to='${value.windowTo}'::timestamptz, next_page=${page}, total_pages=${total} WHERE region_id=${region};
+SET LOCAL ROLE service_role;
+SELECT ${rpc};
+RESET ROLE;
+DO $$ BEGIN
+  IF (SELECT count(*) FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(${items}) x)) <> ${expected} THEN RAISE EXCEPTION 'La repetición creó duplicados'; END IF;
+  IF (SELECT date_mode FROM public.compra_agil_sync_priority_state WHERE region_id=${region}) <> '${mode}' THEN RAISE EXCEPTION 'El checkpoint perdió el modo fijado'; END IF;
+  IF (SELECT next_page FROM public.compra_agil_sync_priority_state WHERE region_id=${region}) <> ${nextPage} THEN RAISE EXCEPTION 'La repetición perdió el avance de paginación'; END IF;
+  RAISE NOTICE 'Fixture: % códigos, modo=${mode}, página=${page}/${total}, next_page=${nextPage}', ${expected};
+END $$;`;
+  }).join("\n");
   return `\\set ON_ERROR_STOP on
-SET ROLE service_role;
 BEGIN;
+CREATE TEMP TABLE ca_fixture_historical AS SELECT region_id,next_page,window_to FROM public.compra_agil_sync_state WHERE region_id=${region};
 CREATE TEMP TABLE ca_real_fixture (body jsonb);
-INSERT INTO ca_real_fixture VALUES (:'fixture_json'::jsonb);
--- psql variable is supplied below by the caller through a temporary setting.
-DO $$
-DECLARE
-  f jsonb;
-  items jsonb;
-  hist_page integer;
-  hist_to timestamptz;
-  mode text;
-  run_token uuid;
-  result jsonb;
-  expected_count integer;
-  actual_count integer;
-  expected_next_page integer;
-  is_complete boolean;
-  old_mode text;
-BEGIN
-  SELECT body INTO f FROM ca_real_fixture;
-  items := f->'items';
-  expected_count := jsonb_array_length(items);
-  SELECT next_page, window_to INTO hist_page, hist_to FROM public.compra_agil_sync_state WHERE region_id = (f->>'regionId')::smallint;
-  DELETE FROM public.compra_agil_sync_observations WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
-  DELETE FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
-  is_complete := (f->>'page')::integer >= (f->>'totalPages')::integer;
-  expected_next_page := CASE WHEN is_complete THEN 1 ELSE (f->>'page')::integer + 1 END;
-  FOREACH mode IN ARRAY ARRAY['strict_utc','chile_wall_z'] LOOP
-    -- This reset is confined to the disposable CI transaction. Production never
-    -- switches an in-progress checkpoint; the RPC below verifies the pinned mode.
-    DELETE FROM public.compra_agil_sync_observations WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
-    DELETE FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
-    run_token := md5(mode || clock_timestamp()::text)::uuid;
-    UPDATE public.compra_agil_sync_state SET lock_token=run_token, lock_until=clock_timestamp()+interval '5 minutes' WHERE region_id=(f->>'regionId')::smallint;
-    UPDATE public.compra_agil_sync_priority_state SET lock_token=run_token, window_from=(f->>'windowFrom')::timestamptz, window_to=(f->>'windowTo')::timestamptz,
-      next_page=(f->>'page')::integer, total_pages=(f->>'totalPages')::integer, date_mode=mode WHERE region_id=(f->>'regionId')::smallint;
-    old_mode := CASE WHEN mode='strict_utc' THEN 'chile_wall_z' ELSE 'strict_utc' END;
-    BEGIN
-      PERFORM public.compra_agil_sync_commit_page_with_mode('priority',(f->>'regionId')::smallint,run_token,(f->>'page')::integer,(f->>'totalPages')::integer,is_complete,
-        (f->>'windowTo')::timestamptz,items,old_mode);
-      RAISE EXCEPTION 'RPC permitió cambiar modo durante ventana activa';
-    EXCEPTION WHEN SQLSTATE '40001' THEN NULL;
-    END;
-    IF EXISTS (SELECT 1 FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x)) THEN
-      RAISE EXCEPTION 'Cambio de modo rechazado dejó escrituras';
-    END IF;
-    result := public.compra_agil_sync_commit_page_with_mode('priority',(f->>'regionId')::smallint,run_token,(f->>'page')::integer,(f->>'totalPages')::integer,is_complete,
-      (f->>'windowTo')::timestamptz,items,mode);
-    IF (result->>'inserted')::integer <> expected_count THEN RAISE EXCEPTION 'RPC no guardó todos los códigos únicos para %', mode; END IF;
-    SELECT count(*) INTO actual_count FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
-    IF actual_count <> expected_count THEN RAISE EXCEPTION 'La muestra tiene duplicados o registros perdidos para %', mode; END IF;
-    IF (SELECT next_page FROM public.compra_agil_sync_priority_state WHERE region_id=(f->>'regionId')::smallint) <> expected_next_page THEN
-      RAISE EXCEPTION 'El checkpoint no avanzó la página de forma coherente';
-    END IF;
-    -- Replaying the same first page is an idempotent update, not another row.
-    UPDATE public.compra_agil_sync_state SET lock_until=clock_timestamp()+interval '5 minutes' WHERE region_id=(f->>'regionId')::smallint;
-    UPDATE public.compra_agil_sync_priority_state SET window_from=(f->>'windowFrom')::timestamptz, window_to=(f->>'windowTo')::timestamptz,
-      next_page=(f->>'page')::integer, total_pages=(f->>'totalPages')::integer WHERE region_id=(f->>'regionId')::smallint;
-    result := public.compra_agil_sync_commit_page_with_mode('priority',(f->>'regionId')::smallint,run_token,(f->>'page')::integer,(f->>'totalPages')::integer,is_complete,
-      (f->>'windowTo')::timestamptz,items,mode);
-    SELECT count(*) INTO actual_count FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(items) x);
-    IF actual_count <> expected_count THEN RAISE EXCEPTION 'Repetición creó duplicados para %', mode; END IF;
-    IF (SELECT date_mode FROM public.compra_agil_sync_priority_state WHERE region_id=(f->>'regionId')::smallint) <> mode THEN
-      RAISE EXCEPTION 'El checkpoint no conservó el modo %', mode;
-    END IF;
-    RAISE NOTICE 'Fixture %: % oportunidades guardadas una sola vez; modo=%; página=%/%; estado=%', f->>'regionId', expected_count, mode, f->>'page', f->>'totalPages', CASE WHEN is_complete THEN 'completa' ELSE 'parcial' END;
-  END LOOP;
-  IF (SELECT next_page FROM public.compra_agil_sync_state WHERE region_id=(f->>'regionId')::smallint) <> hist_page
-     OR (SELECT window_to FROM public.compra_agil_sync_state WHERE region_id=(f->>'regionId')::smallint) IS DISTINCT FROM hist_to THEN
-    RAISE EXCEPTION 'La prueba alteró el checkpoint histórico';
+INSERT INTO ca_real_fixture VALUES ('${JSON.stringify(value).replaceAll("'", "''")}'::jsonb);
+DELETE FROM public.compra_agil_sync_observations WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(${items}) x);
+DELETE FROM public.compra_agil_oportunidades WHERE codigo IN (SELECT x->>'codigo' FROM jsonb_array_elements(${items}) x);
+${modeSql}
+DO $$ BEGIN
+  IF (SELECT next_page FROM public.compra_agil_sync_state WHERE region_id=${region}) <> (SELECT next_page FROM ca_fixture_historical WHERE region_id=${region})
+     OR (SELECT window_to FROM public.compra_agil_sync_state WHERE region_id=${region}) IS DISTINCT FROM (SELECT window_to FROM ca_fixture_historical WHERE region_id=${region}) THEN
+    RAISE EXCEPTION 'La página prioritaria alteró el checkpoint histórico';
   END IF;
 END $$;
 ROLLBACK;
-RESET ROLE;
-`.replace("INSERT INTO ca_real_fixture VALUES (:'fixture_json'::jsonb);", `INSERT INTO ca_real_fixture VALUES ('${jsonLiteral}'::jsonb);`);
+`;
 }
 
 function validInstant(value) { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
