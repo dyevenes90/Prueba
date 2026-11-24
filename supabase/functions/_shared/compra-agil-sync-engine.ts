@@ -227,7 +227,8 @@ export async function runPriorityRegion(options: {
   );
   if (!acquired) return { ...empty, estado: "otra_sincronizacion_en_curso" };
 
-  let found = 0, inserted = 0, updated = 0, successfulPages = 0;
+  let found = 0, inserted = 0, updated = 0, successfulPages = 0, queriedPages = 0, omitted = 0, duplicateCodes = 0;
+  const foundCodes = new Set<string>();
   let state: Checkpoint | null = null;
   let failure: string | null = null;
   let quotaExhausted = false;
@@ -325,6 +326,7 @@ export async function runPriorityRegion(options: {
         break;
       }
 
+      queriedPages++;
       const body: unknown = await response.json();
       if (!isRecord(body) || body.success !== "OK" || !isRecord(body.payload) || !Array.isArray(body.payload.items)) {
         throw new Error("Respuesta inválida de Compra Ágil v2; checkpoint sin avanzar");
@@ -333,6 +335,8 @@ export async function runPriorityRegion(options: {
       if (items.length > SYNC_PAGE_SIZE) throw new Error("La API excedió el tamaño de página; checkpoint sin avanzar");
       found += items.length;
       const uniqueItems = uniqueApiItems(items);
+      duplicateCodes += Math.max(0, items.length - uniqueItems.length);
+      for (const item of uniqueItems) foundCodes.add(String(item.codigo));
       const pagination = body.payload.paginacion;
       const reportedPages = isRecord(pagination) ? pagination.total_paginas : null;
       const hasReportedTotal = Number.isInteger(reportedPages) && Number(reportedPages) > 0;
@@ -347,6 +351,7 @@ export async function runPriorityRegion(options: {
       });
       inserted += committed.inserted;
       updated += committed.updated;
+      omitted += Math.max(0, uniqueItems.length - committed.inserted - committed.updated);
       successfulPages++;
       page++;
     }
@@ -372,11 +377,15 @@ export async function runPriorityRegion(options: {
   return {
     region: regionId,
     estado: stateLabel,
-    paginas_consultadas: successfulPages,
+    paginas_consultadas: queriedPages,
+    paginas_guardadas: successfulPages,
     solicitudes_api: budget.consumed - requestsAtStart,
     oportunidades_encontradas: found,
+    codigos_encontrados: [...foundCodes],
     nuevas: inserted,
     actualizadas: updated,
+    omitidos: omitted,
+    codigos_duplicados_en_respuesta: duplicateCodes,
     cambio_desde: windowFrom,
     cambio_hasta: windowTo,
     pagina_siguiente: complete ? 1 : page,

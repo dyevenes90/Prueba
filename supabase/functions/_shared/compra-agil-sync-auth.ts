@@ -3,6 +3,8 @@
   "sincronizacion_prioritaria_programada",
 ]);
 
+export const MANUAL_ONE_PAGE_ACTION = "prueba_prioritaria_una_pagina";
+
 export type SyncAuthContext = {
   authMode: "user" | "secret" | "publishable" | "none" | null;
   authKeyName?: string | null;

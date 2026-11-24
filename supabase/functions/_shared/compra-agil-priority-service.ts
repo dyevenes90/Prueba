@@ -2,15 +2,30 @@ import { formatChangeWindowForApi, runPriorityRegion, type ApiDateMode, type Che
 
 type Db = any;
 const MAX_REQUESTS = 4;
+export const MANUAL_ONE_PAGE_REQUEST_LIMIT = 1;
 const REGIONS: Record<number, string> = { 9: "Región de La Araucanía", 14: "Región de Los Ríos" };
 
-export async function runPrioritySync(options: { db: Db; ticket: string; regions: number[]; bootstrapFrom: string | null; bootstrapWindowHours?: number | null; scheduled: boolean; dateMode?: ApiDateMode }) {
+export function getPriorityRunLimits(regionCount: number, onePageManual = false, scheduled = false) {
+  if (onePageManual && scheduled) throw new Error("La prueba manual de una página no admite ejecución programada");
+  if (onePageManual) return { requests: MANUAL_ONE_PAGE_REQUEST_LIMIT, pagesPerRegion: 1 };
+  return { requests: MAX_REQUESTS, pagesPerRegion: Math.max(1, Math.floor(MAX_REQUESTS / Math.max(1, regionCount))) };
+}
+
+export function priorityCheckpointHasSuccessfulPage(checkpoint: Pick<Checkpoint, "cursor_success" | "window_from" | "window_to" | "next_page"> | null | undefined) {
+  if (!checkpoint) return false;
+  return Boolean(checkpoint.cursor_success) || Boolean(checkpoint.window_from && checkpoint.window_to && Number(checkpoint.next_page) > 1);
+}
+
+export async function runPrioritySync(options: { db: Db; ticket: string; regions: number[]; bootstrapFrom: string | null; bootstrapWindowHours?: number | null; scheduled: boolean; onePageManual?: boolean; dateMode?: ApiDateMode; fetchPage?: (url: URL, ticket: string) => Promise<Response> }) {
   const { db, ticket, bootstrapFrom, scheduled } = options;
-  const regions = scheduled ? [9, 14] : [...new Set(options.regions)];
+  const onePageManual = options.onePageManual === true;
+  if (onePageManual && scheduled) return { error: "La prueba manual de una página no admite ejecución programada" };
+  const regions = onePageManual ? [9] : scheduled ? [9, 14] : [...new Set(options.regions)];
   if (!regions.length || regions.length > 2 || regions.some((id) => !REGIONS[id])) {
     return { error: "El flujo prioritario admite Araucanía (9) y Los Ríos (14), hasta dos regiones" };
   }
-  const budget: RequestBudget = { remaining: MAX_REQUESTS, consumed: 0 };
+  const limits = getPriorityRunLimits(regions.length, onePageManual, scheduled);
+  const budget: RequestBudget = { remaining: limits.requests, consumed: 0 };
   const runId = crypto.randomUUID();
   const summaries: Record<string, unknown>[] = [];
   for (const regionId of regions) {
@@ -101,12 +116,12 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
     let result: Awaited<ReturnType<typeof runPriorityRegion>>;
     try {
       result = await runPriorityRegion({
-        regionId, runId, bootstrapFrom, bootstrapWindowHours: scheduled ? options.bootstrapWindowHours ?? 48 : null, dateMode: options.dateMode, startedAt, maxPages: Math.max(1, Math.floor(MAX_REQUESTS / regions.length)), budget, repository,
+        regionId, runId, bootstrapFrom, bootstrapWindowHours: scheduled || onePageManual ? options.bootstrapWindowHours ?? 48 : null, dateMode: options.dateMode, startedAt, maxPages: limits.pagesPerRegion, budget, repository,
         fetchPage: async ({ regionId: id, from, to, page, pageSize }) => {
           const url = new URL("https://api2.mercadopublico.cl/v2/compra-agil");
           url.searchParams.set("region", String(id)); url.searchParams.set("cambio_desde", formatChangeWindowForApi(from, options.dateMode)); url.searchParams.set("cambio_hasta", formatChangeWindowForApi(to, options.dateMode));
           url.searchParams.set("tamano_pagina", String(pageSize)); url.searchParams.set("numero_pagina", String(page)); url.searchParams.set("ordenar_por", "FechaUltimaModificacion");
-          return await fetch(url, { method: "GET", headers: { ticket, Accept: "application/json" }, signal: AbortSignal.timeout(25_000) });
+          return await (options.fetchPage ?? ((target, secret) => fetch(target, { method: "GET", headers: { ticket: secret, Accept: "application/json" }, signal: AbortSignal.timeout(25_000) })))(url, ticket);
         },
       });
     } catch (error) {
@@ -116,8 +131,20 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
       summaries.push({ region: regionId, nombre: REGIONS[regionId], estado: "error", paginas_consultadas: 0, error: message });
       continue;
     }
-    summaries.push({ ...result, nombre: REGIONS[regionId] });
+    let checkpointFinal: Record<string, unknown> | null = null;
+    try {
+      const checkpoint = await repository.readCheckpoint(regionId);
+      if (checkpoint) checkpointFinal = {
+        cursor_success: checkpoint.cursor_success,
+        window_from: checkpoint.window_from,
+        window_to: checkpoint.window_to,
+        next_page: checkpoint.next_page,
+        total_pages: checkpoint.total_pages,
+        date_mode: checkpoint.date_mode ?? "strict_utc",
+      };
+    } catch { /* Summary remains useful if checkpoint readback fails. */ }
+    summaries.push({ ...result, nombre: REGIONS[regionId], checkpoint_final: checkpointFinal });
     await db.from("compra_agil_ejecuciones").update({ estado: result.estado, termino: new Date().toISOString(), oportunidades_encontradas: result.oportunidades_encontradas, oportunidades_nuevas: result.nuevas, error_detalle: result.error ?? (result.estado === "parcial_por_limite" ? "Límite por ejecución; checkpoint prioritario conservado" : null) }).eq("id", execution.data.id);
   }
-  return { sincronizacion: "prioritaria", regiones: summaries, solicitudes_maximas_por_ejecucion: MAX_REQUESTS, cuota_agotada: summaries.some((row) => row.estado === "cuota_agotada") };
+  return { sincronizacion: onePageManual ? "prueba_prioritaria_una_pagina" : "prioritaria", regiones: summaries, solicitudes_maximas_por_ejecucion: limits.requests, paginas_maximas_por_region: limits.pagesPerRegion, cuota_agotada: summaries.some((row) => row.estado === "cuota_agotada") };
 }

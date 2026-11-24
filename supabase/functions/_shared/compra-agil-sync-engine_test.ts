@@ -171,6 +171,26 @@ Deno.test("four-page budget stores progress and resumes without repeating comple
   if (second.estado !== "completada" || f.calls.join(",") !== "1,2,3,4,5,6" || f.requests[4].from !== savedFrom || f.requests[4].to !== savedTo || f.requests[4].page !== 5) throw new Error("resume repeated, reset its window, or lost a page");
 });
 
+Deno.test("one-page manual run cannot exceed one HTTP request and preserves the page on quota failure", async () => {
+  for (const status of [429, 503]) {
+    const f = fixture([{ status, total: 7 }]);
+    const budget = { remaining: 1, consumed: 0 };
+    const result = await runPriorityRegion({ regionId: 9, runId: `one-page-${status}`, bootstrapFrom: null, bootstrapWindowHours: 48, startedAt: start, maxPages: 1, budget, repository: f.repo, fetchPage: f.fetchPage, sleep: async () => {}, clock: () => f.clock.value });
+    if (f.calls.length !== 1 || result.solicitudes_api !== 1 || budget.consumed !== 1) throw new Error(`HTTP ${status} exceeded the single request cap`);
+    if (result.paginas_consultadas !== 0 || result.paginas_guardadas !== 0 || result.pagina_siguiente !== 1 || f.state.next_page !== 1 || f.commits.length) throw new Error(`HTTP ${status} advanced or wrote the checkpoint`);
+  }
+});
+
+Deno.test("one-page manual run saves only one page and returns codes and continuation checkpoint", async () => {
+  const f = fixture([{ items: [{ codigo: "4117-333-COT26" }, { codigo: "4117-333-COT26" }], total: 3 }]);
+  const budget = { remaining: 1, consumed: 0 };
+  const result = await runPriorityRegion({ regionId: 9, runId: "one-page-success", bootstrapFrom: null, bootstrapWindowHours: 48, startedAt: start, maxPages: 1, budget, repository: f.repo, fetchPage: f.fetchPage, sleep: async () => {}, clock: () => f.clock.value });
+  if (f.calls.length !== 1 || f.commits.length !== 1 || result.solicitudes_api !== 1) throw new Error("one-page run performed more than one API call or commit");
+  if (result.paginas_consultadas !== 1 || result.paginas_guardadas !== 1 || result.pagina_siguiente !== 2 || result.total_paginas !== 3) throw new Error("one-page pagination summary is incorrect");
+  if (result.oportunidades_encontradas !== 2 || result.codigos_encontrados?.join(",") !== "4117-333-COT26" || result.codigos_duplicados_en_respuesta !== 1) throw new Error("one-page code summary is incorrect");
+  if (f.state.next_page !== 2 || f.state.cursor_success !== null || f.saved.length !== 1) throw new Error("one-page run did not preserve its independent continuation checkpoint");
+});
+
 Deno.test("scheduled first run uses a configurable 48-hour window", async () => {
   const f = fixture([{ items: [] }]);
   const result = await run(f, "bootstrap", 4, 4, null, 48);

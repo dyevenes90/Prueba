@@ -1,6 +1,6 @@
 import { withSupabase } from "npm:@supabase/server@1";
 import { DEFAULT_PRIORITY_BOOTSTRAP_HOURS, formatChangeWindowForApi, MAX_PRIORITY_BOOTSTRAP_HOURS, parseApiDateMode } from "../_shared/compra-agil-sync-engine.ts";
-import { authorizeSyncAction } from "../_shared/compra-agil-sync-auth.ts";
+import { authorizeSyncAction, MANUAL_ONE_PAGE_ACTION } from "../_shared/compra-agil-sync-auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -123,7 +123,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
     action: typeof requestBody.accion === "string" ? requestBody.accion : undefined,
   });
   if (!authorization.allowed) return json({ error: authorization.error }, authorization.status);
-  if (requestBody.accion !== undefined && !["detalle", "sincronizar_regiones", "buscar_compras_nuevas", "continuar_historico", "sincronizacion_programada", "sincronizacion_prioritaria_programada"].includes(String(requestBody.accion))) {
+  if (requestBody.accion !== undefined && !["detalle", "sincronizar_regiones", "buscar_compras_nuevas", MANUAL_ONE_PAGE_ACTION, "continuar_historico", "sincronizacion_programada", "sincronizacion_prioritaria_programada"].includes(String(requestBody.accion))) {
     return json({ error: "Acción no válida" }, 400);
   }
 
@@ -186,26 +186,34 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
 
   if (requestBody.accion === undefined) return json({ error: "Se requiere una acción explícita" }, 400);
 
-  if (["buscar_compras_nuevas", "sincronizacion_prioritaria_programada"].includes(String(requestBody.accion))) {
+  if (["buscar_compras_nuevas", "sincronizacion_prioritaria_programada", MANUAL_ONE_PAGE_ACTION].includes(String(requestBody.accion))) {
     const ticket = Deno.env.get("MERCADOPUBLICO_TICKET");
     if (!ticket) return json({ error: "Configuración del servicio incompleta" }, 500);
     let dateMode;
     try { dateMode = parseApiDateMode(Deno.env.get("COMPRA_AGIL_API_DATE_MODE")); }
     catch (error) { return json({ error: error instanceof Error ? error.message : "Configuración de fechas inválida" }, 500); }
     const scheduled = requestBody.accion === "sincronizacion_prioritaria_programada";
-    const regions = Array.isArray(requestBody.regiones) ? requestBody.regiones.map(Number) : [9, 14];
+    const onePageManual = requestBody.accion === MANUAL_ONE_PAGE_ACTION;
+    const regions = onePageManual ? [9] : Array.isArray(requestBody.regiones) ? requestBody.regiones.map(Number) : [9, 14];
+    if (requestBody.accion === "buscar_compras_nuevas") {
+      const { priorityCheckpointHasSuccessfulPage } = await import("../_shared/compra-agil-priority-service.ts");
+      const checkpointResult = await ctx.supabaseAdmin.from("compra_agil_sync_priority_state")
+        .select("cursor_success, window_from, window_to, next_page").eq("region_id", 9).maybeSingle();
+      if (checkpointResult.error || !checkpointResult.data) return json({ error: "Falta el checkpoint prioritario; aplique primero las migraciones revisadas" }, 503);
+      if (!priorityCheckpointHasSuccessfulPage(checkpointResult.data)) return json({ error: "Antes de la sincronización manual completa, ejecute la prueba limitada de una página para Araucanía" }, 409);
+    }
     const requestedBootstrapFrom = typeof requestBody.cambio_desde === "string" && Number.isFinite(Date.parse(requestBody.cambio_desde))
       ? new Date(requestBody.cambio_desde).toISOString() : null;
     const rawBootstrapHours = Deno.env.get("COMPRA_AGIL_PRIORITY_BOOTSTRAP_HOURS");
-    const bootstrapWindowHours = scheduled
+    const bootstrapWindowHours = scheduled || onePageManual
       ? rawBootstrapHours === undefined ? DEFAULT_PRIORITY_BOOTSTRAP_HOURS : Number(rawBootstrapHours)
       : null;
-    if (scheduled && (!Number.isInteger(bootstrapWindowHours) || bootstrapWindowHours! < 1 || bootstrapWindowHours! > MAX_PRIORITY_BOOTSTRAP_HOURS)) {
+    if ((scheduled || onePageManual) && (!Number.isInteger(bootstrapWindowHours) || bootstrapWindowHours! < 1 || bootstrapWindowHours! > MAX_PRIORITY_BOOTSTRAP_HOURS)) {
       return json({ error: `COMPRA_AGIL_PRIORITY_BOOTSTRAP_HOURS debe ser entero de 1 a ${MAX_PRIORITY_BOOTSTRAP_HOURS}` }, 500);
     }
-    const bootstrapFrom = scheduled ? null : requestedBootstrapFrom;
+    const bootstrapFrom = scheduled || onePageManual ? null : requestedBootstrapFrom;
     const result = await import("../_shared/compra-agil-priority-service.ts").then(({ runPrioritySync }) => runPrioritySync({
-      db: ctx.supabaseAdmin, ticket, regions, bootstrapFrom, bootstrapWindowHours, scheduled,
+      db: ctx.supabaseAdmin, ticket, regions, bootstrapFrom, bootstrapWindowHours, scheduled, onePageManual,
       dateMode,
     }));
     return json(result, "error" in result ? 503 : 200);
