@@ -6,6 +6,27 @@ const RETRY_LIMIT_MS = 10_000;
 const OVERLAP_MS = 5 * 60_000;
 export const DEFAULT_PRIORITY_BOOTSTRAP_HOURS = 48;
 export const MAX_PRIORITY_BOOTSTRAP_HOURS = 168;
+export type ApiDateMode = "strict_utc" | "chile_wall_z";
+
+/** Fail closed to the documented ISO-8601 interpretation unless explicitly configured. */
+export function parseApiDateMode(value: string | null | undefined): ApiDateMode {
+  const mode = value?.trim() || "strict_utc";
+  if (mode === "strict_utc" || mode === "chile_wall_z") return mode;
+  throw new Error("COMPRA_AGIL_API_DATE_MODE debe ser strict_utc o chile_wall_z");
+}
+
+/** Checkpoint timestamps remain UTC instants; only the outbound API window is adapted. */
+export function formatChangeWindowForApi(value: string, mode: ApiDateMode = "strict_utc"): string {
+  const instant = Date.parse(value);
+  if (!Number.isFinite(instant)) throw new Error("La ventana de cambios debe ser un instante ISO válido");
+  const date = new Date(instant);
+  if (mode === "strict_utc") return date.toISOString();
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Santiago", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(date).map(({ type, value }) => [type, value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.${String(date.getUTCMilliseconds()).padStart(3, "0")}Z`;
+}
 
 export type Checkpoint = {
   region_id: number;
@@ -33,6 +54,7 @@ export type PageCommit = {
   complete: boolean;
   windowTo: string;
   items: ApiItem[];
+  lastChangeZIsChileLocal: boolean;
 };
 
 export interface PrioritySyncRepository {
@@ -54,12 +76,17 @@ export function uniqueApiItems(items: ApiItem[]): ApiItem[] {
   return [...byCode.values()];
 }
 
-export function sourceModifiedAt(item: unknown): number | null {
+export function sourceModifiedAt(item: unknown, mode: ApiDateMode = "strict_utc"): number | null {
   if (!isRecord(item)) return null;
   const dates = isRecord(item.fechas) ? item.fechas : {};
   const value = dates.fecha_ultimo_cambio;
-  return typeof value === "string" && /(Z|[+-]\d{2}:\d{2})$/i.test(value) && Number.isFinite(Date.parse(value))
-    ? Date.parse(value)
+  if (typeof value !== "string") return null;
+  if (mode === "chile_wall_z" && /Z$/i.test(value)) {
+    const normalized = parseSourceDate(value.slice(0, -1));
+    return normalized === null ? null : Date.parse(normalized);
+  }
+  return /(Z|[+-]\d{2}:?\d{2})$/i.test(value) && Number.isFinite(Date.parse(value))
+    ? Date.parse(value.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"))
     : null;
 }
 
@@ -129,13 +156,14 @@ export function buildOpportunityRows(
   region: string,
   timestamp: string,
   source: "priority" | "historical" = "priority",
+  dateMode: ApiDateMode = "strict_utc",
 ) {
   const prior = new Map(existingRows.flatMap((row) => typeof row.codigo === "string" ? [[row.codigo, row] as const] : []));
   return uniqueApiItems(items).flatMap((item) => {
     const code = String(item.codigo);
     const old = prior.get(code) ?? {};
-    const sourceModified = sourceModifiedAt(item);
-    const oldSourceModified = sourceModifiedAt(old.datos_originales);
+    const sourceModified = sourceModifiedAt(item, dateMode);
+    const oldSourceModified = sourceModifiedAt(old.datos_originales, dateMode);
     // Compare only source timestamps. Fetch time is never a proxy for version
     // order; if either source timestamp is absent, preserve the existing row.
     if (old.codigo && source === "historical" && (
@@ -173,6 +201,7 @@ export async function runPriorityRegion(options: {
   runId: string;
   bootstrapFrom: string | null;
   bootstrapWindowHours?: number | null;
+  dateMode?: ApiDateMode;
   startedAt: string;
   maxPages: number;
   budget: RequestBudget;
@@ -310,6 +339,7 @@ export async function runPriorityRegion(options: {
       await assertLock();
       const committed = await repository.commitPage({
         regionId, runId, page, totalPages, complete, windowTo, items: uniqueItems,
+        lastChangeZIsChileLocal: options.dateMode === "chile_wall_z",
       });
       inserted += committed.inserted;
       updated += committed.updated;

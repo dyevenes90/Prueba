@@ -1,10 +1,10 @@
-import { runPriorityRegion, type Checkpoint, type PageCommit, type PrioritySyncRepository, type RequestBudget } from "./compra-agil-sync-engine.ts";
+import { formatChangeWindowForApi, runPriorityRegion, type ApiDateMode, type Checkpoint, type PageCommit, type PrioritySyncRepository, type RequestBudget } from "./compra-agil-sync-engine.ts";
 
 type Db = any;
 const MAX_REQUESTS = 4;
 const REGIONS: Record<number, string> = { 9: "Región de La Araucanía", 14: "Región de Los Ríos" };
 
-export async function runPrioritySync(options: { db: Db; ticket: string; regions: number[]; bootstrapFrom: string | null; bootstrapWindowHours?: number | null; scheduled: boolean }) {
+export async function runPrioritySync(options: { db: Db; ticket: string; regions: number[]; bootstrapFrom: string | null; bootstrapWindowHours?: number | null; scheduled: boolean; dateMode?: ApiDateMode }) {
   const { db, ticket, bootstrapFrom, scheduled } = options;
   const regions = scheduled ? [9, 14] : [...new Set(options.regions)];
   if (!regions.length || regions.length > 2 || regions.some((id) => !REGIONS[id])) {
@@ -82,6 +82,7 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
           p_complete: input.complete,
           p_window_to: input.windowTo,
           p_items: input.items,
+          p_last_change_z_is_chile_local: input.lastChangeZIsChileLocal,
         });
         if (error || !data || !Number.isInteger(data.inserted) || !Number.isInteger(data.updated)) {
           throw new Error("La operación transaccional del flujo prioritario falló; datos y checkpoint no se confirmaron");
@@ -100,10 +101,10 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
     let result: Awaited<ReturnType<typeof runPriorityRegion>>;
     try {
       result = await runPriorityRegion({
-        regionId, runId, bootstrapFrom, bootstrapWindowHours: scheduled ? options.bootstrapWindowHours ?? 48 : null, startedAt, maxPages: Math.max(1, Math.floor(MAX_REQUESTS / regions.length)), budget, repository,
+        regionId, runId, bootstrapFrom, bootstrapWindowHours: scheduled ? options.bootstrapWindowHours ?? 48 : null, dateMode: options.dateMode, startedAt, maxPages: Math.max(1, Math.floor(MAX_REQUESTS / regions.length)), budget, repository,
         fetchPage: async ({ regionId: id, from, to, page, pageSize }) => {
           const url = new URL("https://api2.mercadopublico.cl/v2/compra-agil");
-          url.searchParams.set("region", String(id)); url.searchParams.set("cambio_desde", from); url.searchParams.set("cambio_hasta", to);
+          url.searchParams.set("region", String(id)); url.searchParams.set("cambio_desde", formatChangeWindowForApi(from, options.dateMode)); url.searchParams.set("cambio_hasta", formatChangeWindowForApi(to, options.dateMode));
           url.searchParams.set("tamano_pagina", String(pageSize)); url.searchParams.set("numero_pagina", String(page)); url.searchParams.set("ordenar_por", "FechaUltimaModificacion");
           return await fetch(url, { method: "GET", headers: { ticket, Accept: "application/json" }, signal: AbortSignal.timeout(25_000) });
         },

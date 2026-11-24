@@ -1,4 +1,4 @@
-import { buildOpportunityRows, parseSourceDate, sourceModifiedAt, runPriorityRegion, type ApiItem, type Checkpoint, type PrioritySyncRepository } from "./compra-agil-sync-engine.ts";
+import { buildOpportunityRows, formatChangeWindowForApi, parseApiDateMode, parseSourceDate, sourceModifiedAt, runPriorityRegion, type ApiItem, type Checkpoint, type PrioritySyncRepository } from "./compra-agil-sync-engine.ts";
 
 function fixture(pages: Array<{ status?: number; items?: ApiItem[]; total?: number }>) {
   const state: Checkpoint = { region_id: 9, cursor_success: null, window_from: null, window_to: null, next_page: 1, total_pages: null };
@@ -70,6 +70,47 @@ Deno.test("source dates preserve explicit offsets and interpret naive values in 
   for (const [input, expected] of cases) {
     const actual = parseSourceDate(input);
     if (actual !== expected) throw new Error(`${String(input)} parsed as ${actual}; expected ${expected}`);
+  }
+});
+
+Deno.test("field-specific Chile wall-Z mode is opt-in, preserves explicit offsets, and formats both change-window bounds", () => {
+  const summer = { fechas: { fecha_ultimo_cambio: "2026-11-23T19:30:00.570Z" } };
+  const winter = { fechas: { fecha_ultimo_cambio: "2026-07-17T16:30:00Z" } };
+  const strict = parseApiDateMode(undefined);
+  const configured = parseApiDateMode("chile_wall_z");
+  if (strict !== "strict_utc" || configured !== "chile_wall_z") throw new Error("date-mode defaults or explicit configuration changed");
+  if (sourceModifiedAt(summer, strict) !== Date.parse("2026-11-23T19:30:00.570Z")
+    || sourceModifiedAt(summer, configured) !== Date.parse("2026-11-23T22:30:00.570Z")) {
+    throw new Error("summer fecha_ultimo_cambio Z did not follow the selected field policy");
+  }
+  if (sourceModifiedAt(winter, strict) !== Date.parse("2026-07-17T16:30:00Z")
+    || sourceModifiedAt(winter, configured) !== Date.parse("2026-07-17T20:30:00Z")) {
+    throw new Error("winter fecha_ultimo_cambio Z did not follow the selected field policy");
+  }
+  const explicitOffset = { fechas: { fecha_ultimo_cambio: "2026-07-17T16:30:00-04:00" } };
+  if (sourceModifiedAt(explicitOffset, configured) !== Date.parse("2026-07-17T20:30:00Z")) {
+    throw new Error("numeric source timezone offset was incorrectly reinterpreted");
+  }
+  if (parseSourceDate("2026-11-23 19:26") !== "2026-11-23T22:26:00.000Z") {
+    throw new Error("publication without timezone was not independently normalized as Santiago wall time");
+  }
+  if (formatChangeWindowForApi("2026-11-23T22:30:00.570Z", strict) !== "2026-11-23T22:30:00.570Z"
+    || formatChangeWindowForApi("2026-11-23T22:30:00.570Z", configured) !== "2026-11-23T19:30:00.570Z"
+    || formatChangeWindowForApi("2026-07-17T20:30:00.000Z", configured) !== "2026-07-17T16:30:00.000Z") {
+    throw new Error("cambio_desde/cambio_hasta must encode the same instant in the configured API comparison representation");
+  }
+  let rejected = false;
+  try { parseApiDateMode("unexpected"); } catch { rejected = true; }
+  if (!rejected) throw new Error("unknown date configuration must fail closed");
+});
+
+Deno.test("a local-Z last-change later than publication is detected only under the explicit field mode", () => {
+  const item = { fechas: { fecha_publicacion: "2026-11-23 19:26", fecha_ultimo_cambio: "2026-11-23T19:30:00.570Z" } };
+  const publication = Date.parse(parseSourceDate(item.fechas.fecha_publicacion)!);
+  const strictModified = sourceModifiedAt(item, "strict_utc")!;
+  const chileModified = sourceModifiedAt(item, "chile_wall_z")!;
+  if (strictModified >= publication || chileModified <= publication) {
+    throw new Error("reported chronology should remain visible as raw values and become ordered only in configured mode");
   }
 });
 

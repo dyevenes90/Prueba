@@ -116,7 +116,10 @@ begin
   end if;
 end $$;
 
-create or replace function public.compra_agil_sync_source_modified_at(p_snapshot jsonb)
+create or replace function public.compra_agil_sync_source_modified_at(
+  p_snapshot jsonb,
+  p_last_change_z_is_chile_local boolean default false
+)
 returns timestamptz
 language plpgsql
 immutable
@@ -125,8 +128,17 @@ as $$
 declare
   v_value text := p_snapshot #>> '{fechas,fecha_ultimo_cambio}';
 begin
-  if v_value is null or v_value !~ '(Z|[+-][0-9]{2}:[0-9]{2})$' then
+  if v_value is null or v_value !~* '(Z|[+-][0-9]{2}:?[0-9]{2})$' then
     return null;
+  end if;
+  -- Only the source modification field has a configurable legacy quirk. An
+  -- explicit numeric offset remains an actual instant under either setting.
+  if coalesce(p_last_change_z_is_chile_local, false) and v_value ~* 'Z$' then
+    v_value := regexp_replace(v_value, 'Z$', '', 'i');
+    if v_value !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$' then
+      return null;
+    end if;
+    return replace(v_value, 'T', ' ')::timestamp without time zone at time zone 'America/Santiago';
   end if;
   return v_value::timestamptz;
 exception when others then
@@ -185,7 +197,8 @@ create or replace function public.compra_agil_sync_commit_page(
   p_total_pages integer,
   p_complete boolean,
   p_window_to timestamptz,
-  p_items jsonb
+  p_items jsonb,
+  p_last_change_z_is_chile_local boolean default false
 )
 returns jsonb
 language plpgsql
@@ -213,7 +226,7 @@ begin
   if p_flow is null or p_flow not in ('historical', 'priority') or p_run_token is null
      or p_region_id is null or p_region_id not between 1 and 16 or p_page is null or p_page < 1
      or (p_total_pages is not null and p_total_pages < 1) or p_complete is null
-     or p_items is null or jsonb_typeof(p_items) <> 'array'
+     or p_items is null or jsonb_typeof(p_items) <> 'array' or p_last_change_z_is_chile_local is null
      or jsonb_array_length(p_items) > 50 or p_window_to is null then
     raise exception 'Parámetros inválidos para commit de sincronización' using errcode = '22023';
   end if;
@@ -270,7 +283,7 @@ begin
       raise exception 'La región del registro no coincide con la consulta' using errcode = '22023';
     end if;
 
-    v_source_at := public.compra_agil_sync_source_modified_at(v_item);
+    v_source_at := public.compra_agil_sync_source_modified_at(v_item, p_last_change_z_is_chile_local);
     v_region := coalesce(nullif(v_item #>> '{institucion,nombre_region}', ''),
       case p_region_id
         when 1 then 'Región de Tarapacá' when 2 then 'Región de Antofagasta'
@@ -308,7 +321,7 @@ begin
       select o.datos_originales into v_existing
       from public.compra_agil_oportunidades o where o.codigo = v_code for update;
     end if;
-    v_existing_source_at := public.compra_agil_sync_source_modified_at(v_existing);
+    v_existing_source_at := public.compra_agil_sync_source_modified_at(v_existing, p_last_change_z_is_chile_local);
     if v_source_at is null or v_existing_source_at is null then
       v_reason := 'source_timestamp_unverifiable';
     elsif v_source_at < v_existing_source_at then
@@ -371,8 +384,8 @@ begin
     'complete', p_complete);
 end $$;
 
-revoke all on function public.compra_agil_sync_source_modified_at(jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.compra_agil_sync_source_modified_at(jsonb, boolean) from public, anon, authenticated, service_role;
 revoke all on function public.compra_agil_sync_parse_source_date(text) from public, anon, authenticated, service_role;
 revoke all on function public.compra_agil_sync_merge_jsonb(jsonb, jsonb) from public, anon, authenticated, service_role;
-revoke all on function public.compra_agil_sync_commit_page(text, smallint, uuid, integer, integer, boolean, timestamptz, jsonb) from public, anon, authenticated;
-grant execute on function public.compra_agil_sync_commit_page(text, smallint, uuid, integer, integer, boolean, timestamptz, jsonb) to service_role;
+revoke all on function public.compra_agil_sync_commit_page(text, smallint, uuid, integer, integer, boolean, timestamptz, jsonb, boolean) from public, anon, authenticated;
+grant execute on function public.compra_agil_sync_commit_page(text, smallint, uuid, integer, integer, boolean, timestamptz, jsonb, boolean) to service_role;

@@ -1,5 +1,5 @@
 import { withSupabase } from "npm:@supabase/server@1";
-import { DEFAULT_PRIORITY_BOOTSTRAP_HOURS, MAX_PRIORITY_BOOTSTRAP_HOURS } from "../_shared/compra-agil-sync-engine.ts";
+import { DEFAULT_PRIORITY_BOOTSTRAP_HOURS, formatChangeWindowForApi, MAX_PRIORITY_BOOTSTRAP_HOURS, parseApiDateMode } from "../_shared/compra-agil-sync-engine.ts";
 import { authorizeSyncAction } from "../_shared/compra-agil-sync-auth.ts";
 
 const corsHeaders = {
@@ -189,6 +189,9 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
   if (["buscar_compras_nuevas", "sincronizacion_prioritaria_programada"].includes(String(requestBody.accion))) {
     const ticket = Deno.env.get("MERCADOPUBLICO_TICKET");
     if (!ticket) return json({ error: "Configuración del servicio incompleta" }, 500);
+    let dateMode;
+    try { dateMode = parseApiDateMode(Deno.env.get("COMPRA_AGIL_API_DATE_MODE")); }
+    catch (error) { return json({ error: error instanceof Error ? error.message : "Configuración de fechas inválida" }, 500); }
     const scheduled = requestBody.accion === "sincronizacion_prioritaria_programada";
     const regions = Array.isArray(requestBody.regiones) ? requestBody.regiones.map(Number) : [9, 14];
     const requestedBootstrapFrom = typeof requestBody.cambio_desde === "string" && Number.isFinite(Date.parse(requestBody.cambio_desde))
@@ -203,12 +206,16 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
     const bootstrapFrom = scheduled ? null : requestedBootstrapFrom;
     const result = await import("../_shared/compra-agil-priority-service.ts").then(({ runPrioritySync }) => runPrioritySync({
       db: ctx.supabaseAdmin, ticket, regions, bootstrapFrom, bootstrapWindowHours, scheduled,
+      dateMode,
     }));
     return json(result, "error" in result ? 503 : 200);
   }
 
   if (["continuar_historico", "sincronizacion_programada", "sincronizar_regiones"].includes(String(requestBody.accion))) {
     const db = ctx.supabaseAdmin;
+    let dateMode;
+    try { dateMode = parseApiDateMode(Deno.env.get("COMPRA_AGIL_API_DATE_MODE")); }
+    catch (error) { return json({ error: error instanceof Error ? error.message : "Configuración de fechas inválida" }, 500); }
     const scheduled = requestBody.accion === "sincronizacion_programada";
     const requestedRegions = scheduled ? Object.keys(REGIONS).map(Number)
       : Array.isArray(requestBody.regiones) ? requestBody.regiones
@@ -337,8 +344,8 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         while (requestsLeft > 0 && pages < Math.max(1, Math.floor(MAX_PAGES_PER_RUN / regions.length)) && !complete) {
           const url = new URL("https://api2.mercadopublico.cl/v2/compra-agil");
           url.searchParams.set("region", String(regionId));
-          url.searchParams.set("cambio_desde", windowFrom);
-          url.searchParams.set("cambio_hasta", windowTo);
+          url.searchParams.set("cambio_desde", formatChangeWindowForApi(windowFrom, dateMode));
+          url.searchParams.set("cambio_hasta", formatChangeWindowForApi(windowTo, dateMode));
           url.searchParams.set("tamano_pagina", String(PAGE_SIZE));
           url.searchParams.set("numero_pagina", String(page));
           url.searchParams.set("ordenar_por", "FechaUltimaModificacion");
@@ -384,6 +391,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
             p_flow: "historical", p_region_id: regionId, p_run_token: runId,
             p_page: page, p_total_pages: totalPages, p_complete: complete,
             p_window_to: windowTo, p_items: validItems,
+            p_last_change_z_is_chile_local: dateMode === "chile_wall_z",
           });
           if (commitError || !committed || !Number.isInteger(committed.inserted) || !Number.isInteger(committed.updated)) {
             throw new Error("El commit transaccional del flujo histórico falló; oportunidades y checkpoint quedaron sin cambios");

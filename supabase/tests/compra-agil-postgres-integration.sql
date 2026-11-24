@@ -56,9 +56,9 @@ begin
   if has_table_privilege('anon', 'public.compra_agil_sync_observations', 'select')
      or has_table_privilege('authenticated', 'public.compra_agil_sync_observations', 'select')
      or has_table_privilege('service_role', 'public.compra_agil_sync_observations', 'select')
-     or has_function_privilege('anon', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb)', 'execute')
-     or has_function_privilege('authenticated', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb)', 'execute')
-     or not has_function_privilege('service_role', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb)', 'execute') then
+     or has_function_privilege('anon', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,boolean)', 'execute')
+     or has_function_privilege('authenticated', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,boolean)', 'execute')
+     or not has_function_privilege('service_role', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,boolean)', 'execute') then
     raise exception 'Permisos observados no coinciden con el acceso privado esperado';
   end if;
   if has_table_privilege('anon', 'public.compra_agil_sync_priority_state', 'select')
@@ -75,7 +75,7 @@ begin
   where region_id = 9;
 
   select public.compra_agil_sync_commit_page('priority', 9::smallint, v_token, 1, 4, false, v_window_to,
-    '[{"codigo":"555-1-COT26","nombre":"Primera versión","estado":{"codigo":"publicada"},"institucion":{"region":9,"nombre_region":"Región de La Araucanía"},"fechas":{"fecha_ultimo_cambio":"2026-11-23T10:00:00Z","fecha_cierre":"2026-11-17 16:28"},"montos":{"monto_disponible_clp":100}}]'::jsonb)
+    '[{"codigo":"555-1-COT26","nombre":"Primera versión","estado":{"codigo":"publicada"},"institucion":{"region":9,"nombre_region":"Región de La Araucanía"},"fechas":{"fecha_publicacion":"2026-11-23 19:26","fecha_ultimo_cambio":"2026-11-23T19:30:00.570Z","fecha_cierre":"2026-11-17 16:28"},"montos":{"monto_disponible_clp":100}}]'::jsonb, true)
   into v_result;
   if (v_result->>'inserted')::int <> 1 then raise exception 'Commit prioritario no insertó su registro'; end if;
   select * into v_historical from public.compra_agil_sync_state where region_id = 9;
@@ -86,6 +86,12 @@ begin
   if (select fecha_cierre from public.compra_agil_oportunidades where codigo = '555-1-COT26') <> '2026-11-17T19:28:00Z'::timestamptz then
     raise exception 'Fecha sin zona no se normalizó a America/Santiago (DST noviembre)';
   end if;
+  if public.compra_agil_sync_source_modified_at(
+       (select datos_originales from public.compra_agil_oportunidades where codigo = '555-1-COT26'), true
+     ) <> '2026-11-23T22:30:00.570Z'::timestamptz
+     or (select datos_originales #>> '{fechas,fecha_ultimo_cambio}' from public.compra_agil_oportunidades where codigo = '555-1-COT26') <> '2026-11-23T19:30:00.570Z' then
+    raise exception 'La normalización no preservó el JSON original o la hora de verano';
+  end if;
 
   select public.compra_agil_sync_commit_page('historical', 9::smallint, v_token, 31, 99, false, '2026-11-18T00:00:00Z', '[]'::jsonb) into v_result;
   select * into v_historical from public.compra_agil_sync_state where region_id = 9;
@@ -94,7 +100,7 @@ begin
 
   -- Stale historical source version is observed but cannot replace priority data.
   perform public.compra_agil_sync_commit_page('historical', 9::smallint, v_token, 32, 99, false, '2026-11-18T00:00:00Z',
-    '[{"codigo":"555-1-COT26","nombre":"Versión antigua","fechas":{"fecha_ultimo_cambio":"2026-11-22T10:00:00Z"},"montos":{"monto_disponible_clp":1}}]'::jsonb);
+    '[{"codigo":"555-1-COT26","nombre":"Versión antigua","fechas":{"fecha_ultimo_cambio":"2026-11-22T10:00:00Z"},"montos":{"monto_disponible_clp":1}}]'::jsonb, true);
   if (select nombre from public.compra_agil_oportunidades where codigo = '555-1-COT26') <> 'Primera versión'
      or (select count(*) from public.compra_agil_sync_observations where codigo = '555-1-COT26' and reason = 'source_version_older') <> 1 then
     raise exception 'Versión histórica obsoleta reemplazó los datos prioritarios o no quedó observada';
@@ -143,6 +149,20 @@ begin
   if public.compra_agil_sync_parse_source_date('2026-11-17T16:28:00-03:00') <> '2026-11-17T19:28:00Z'::timestamptz
      or public.compra_agil_sync_parse_source_date('2026-11-17') is not null then
     raise exception 'Offset explícito o forma de fecha no verificable se interpretó incorrectamente';
+  end if;
+  if public.compra_agil_sync_source_modified_at('{"fechas":{"fecha_ultimo_cambio":"2026-11-23T19:30:00.570Z"}}'::jsonb, true) <> '2026-11-23T22:30:00.570Z'::timestamptz
+     or public.compra_agil_sync_source_modified_at('{"fechas":{"fecha_ultimo_cambio":"2026-11-23T19:30:00.570Z"}}'::jsonb, false) <> '2026-11-23T19:30:00.570Z'::timestamptz
+     or public.compra_agil_sync_source_modified_at('{"fechas":{"fecha_ultimo_cambio":"2026-07-17T16:30:00Z"}}'::jsonb, true) <> '2026-07-17T20:30:00Z'::timestamptz
+     or public.compra_agil_sync_source_modified_at('{"fechas":{"fecha_ultimo_cambio":"2026-07-17T16:30:00Z"}}'::jsonb, false) <> '2026-07-17T16:30:00Z'::timestamptz
+     or public.compra_agil_sync_source_modified_at('{"fechas":{"fecha_ultimo_cambio":"2026-07-17T16:30:00-04:00"}}'::jsonb, true) <> '2026-07-17T20:30:00Z'::timestamptz then
+    raise exception 'fecha_ultimo_cambio no respetó modo de verano/invierno u offset explícito';
+  end if;
+  if public.compra_agil_sync_source_modified_at(
+       (select datos_originales from public.compra_agil_oportunidades where codigo = '555-1-COT26'), true
+     ) <= public.compra_agil_sync_parse_source_date(
+       (select datos_originales #>> '{fechas,fecha_publicacion}' from public.compra_agil_oportunidades where codigo = '555-1-COT26')
+     ) then
+    raise exception 'La modificación normalizada debe ser posterior a la publicación';
   end if;
   raise notice 'PostgreSQL assertions: checkpoints separados, permisos/RLS, versions, rollback, lease y zona Chile OK';
 end $$;
