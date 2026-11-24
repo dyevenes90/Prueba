@@ -107,11 +107,12 @@ try {
     $env:PGCONNECT_TIMEOUT = '15'
     $baseArgs = @('--host', $hostName, '--port', $port, '--username', $userName, '--dbname', $database, '--no-password', '--no-psqlrc', '--tuples-only', '--no-align', '--set', 'ON_ERROR_STOP=1')
 
-    New-Item -ItemType Directory -Path $BackupDirectory -Force | Out-Null
-    $BackupDirectory = (Resolve-Path $BackupDirectory).Path
-    if ($BackupDirectory.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or $BackupDirectory.StartsWith($repoRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    $fullBackupPath = [IO.Path]::GetFullPath($BackupDirectory).TrimEnd('\')
+    if ($fullBackupPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or $fullBackupPath.StartsWith($repoRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
         throw 'La carpeta de respaldo debe estar fuera del repositorio.'
     }
+    New-Item -ItemType Directory -Path $fullBackupPath -Force | Out-Null
+    $BackupDirectory = (Resolve-Path $fullBackupPath).Path
     Set-PrivateDirectoryAcl -Path $BackupDirectory
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
     $backupPath = Join-Path $BackupDirectory "cresce-public-$stamp.dump"
