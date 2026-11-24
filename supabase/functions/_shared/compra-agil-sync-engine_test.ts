@@ -1,7 +1,7 @@
 import { buildOpportunityRows, formatChangeWindowForApi, parseApiDateMode, parseSourceDate, sourceModifiedAt, runPriorityRegion, type ApiItem, type Checkpoint, type PrioritySyncRepository } from "./compra-agil-sync-engine.ts";
 
 function fixture(pages: Array<{ status?: number; items?: ApiItem[]; total?: number }>) {
-  const state: Checkpoint = { region_id: 9, cursor_success: null, window_from: null, window_to: null, next_page: 1, total_pages: null };
+  const state: Checkpoint = { region_id: 9, cursor_success: null, window_from: null, window_to: null, date_mode: "strict_utc", next_page: 1, total_pages: null };
   let lockOwner: string | null = null;
   let lockUntil = 0;
   let validatedOwner: string | null = null;
@@ -21,11 +21,11 @@ function fixture(pages: Array<{ status?: number; items?: ApiItem[]; total?: numb
       if (lockOwner !== runId || lockUntil <= Date.parse(now)) return false;
       lockUntil = Date.parse(until); validatedOwner = runId; return true;
     },
-    startWindow: async (_r, from, to, runId, timestamp) => { if (lockOwner !== runId || lockUntil <= Date.parse(timestamp)) throw new Error("not owner"); state.window_from = from; state.window_to = to; state.next_page = 1; state.total_pages = null; },
+    startWindow: async (_r, from, to, runId, timestamp, dateMode) => { if (lockOwner !== runId || lockUntil <= Date.parse(timestamp)) throw new Error("not owner"); state.window_from = from; state.window_to = to; state.date_mode = dateMode; state.next_page = 1; state.total_pages = null; },
     commitPage: async (input) => {
       if (lockOwner !== input.runId || validatedOwner !== input.runId || lockUntil <= clock.value) throw new Error("not owner or expired lease");
       commits.push(input.page);
-      const rows = buildOpportunityRows(input.items, saved, "Araucania", new Date(clock.value).toISOString(), "priority");
+      const rows = buildOpportunityRows(input.items, saved, "Araucania", new Date(clock.value).toISOString(), "priority", input.dateMode);
       const nextSaved = saved.map((item) => ({ ...item }));
       let inserted = 0, updated = 0;
       for (const row of rows) {
@@ -131,7 +131,19 @@ Deno.test("reported publication and Z modification values reproduce the chronolo
 
 // This test reproduces the anomaly in the supplied API values only. It is not
 // evidence that ChileCompra intends a Z suffix to mean local civil time.
-const run = (f: ReturnType<typeof fixture>, runId = "run-a", maxPages = 4, remaining = 4, bootstrapFrom: string | null = "2026-11-16T03:00:00.000Z", bootstrapWindowHours: number | null = null, startedAt = start) => runPriorityRegion({ regionId: 9, runId, bootstrapFrom, bootstrapWindowHours, startedAt, maxPages, budget: { remaining, consumed: 0 }, repository: f.repo, fetchPage: f.fetchPage, sleep: async () => {}, clock: () => f.clock.value });
+const run = (f: ReturnType<typeof fixture>, runId = "run-a", maxPages = 4, remaining = 4, bootstrapFrom: string | null = "2026-11-16T03:00:00.000Z", bootstrapWindowHours: number | null = null, startedAt = start, dateMode: "strict_utc" | "chile_wall_z" = "strict_utc") => runPriorityRegion({ regionId: 9, runId, bootstrapFrom, bootstrapWindowHours, dateMode, startedAt, maxPages, budget: { remaining, consumed: 0 }, repository: f.repo, fetchPage: f.fetchPage, sleep: async () => {}, clock: () => f.clock.value });
+
+Deno.test("an active priority checkpoint cannot resume under a different date mode", async () => {
+  const f = fixture([{ items: [{ codigo: "mode-mismatch", nombre: "must not query" }] }]);
+  f.state.window_from = "2026-11-23T10:00:00.000Z";
+  f.state.window_to = start;
+  f.state.next_page = 2;
+  f.state.date_mode = "strict_utc";
+  const result = await run(f, "run-a", 1, 1, null, null, start, "chile_wall_z");
+  if (result.estado !== "error" || f.calls.length || f.state.next_page !== 2 || f.saved.length) {
+    throw new Error("date mode change continued or altered an in-progress checkpoint");
+  }
+});
 
 Deno.test("priority flow accepts the Excel reference code from a mocked official response", async () => {
   const f = fixture([{ items: [{ codigo: "4117-333-COT26", nombre: "mock opportunity", estado: { codigo: "publicada" } }] }]);

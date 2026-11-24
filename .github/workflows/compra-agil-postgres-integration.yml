@@ -29,6 +29,9 @@ jobs:
           --health-retries 12
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Apply migrations and run PostgreSQL assertions
         env:
           PGHOST: localhost

@@ -33,6 +33,7 @@ export type Checkpoint = {
   cursor_success: string | null;
   window_from: string | null;
   window_to: string | null;
+  date_mode?: ApiDateMode | null;
   next_page: number;
   total_pages: number | null;
   last_attempt_at?: string | null;
@@ -54,14 +55,14 @@ export type PageCommit = {
   complete: boolean;
   windowTo: string;
   items: ApiItem[];
-  lastChangeZIsChileLocal: boolean;
+  dateMode: ApiDateMode;
 };
 
 export interface PrioritySyncRepository {
   readCheckpoint(regionId: number): Promise<Checkpoint | null>;
   acquireRegionLock(regionId: number, runId: string, nowIso: string, lockUntilIso: string): Promise<boolean>;
   assertRegionLock(regionId: number, runId: string, nowIso: string, lockUntilIso: string): Promise<boolean>;
-  startWindow(regionId: number, from: string, to: string, runId: string, timestamp: string): Promise<void>;
+  startWindow(regionId: number, from: string, to: string, runId: string, timestamp: string, dateMode: ApiDateMode): Promise<void>;
   commitPage(input: PageCommit): Promise<{ inserted: number; updated: number; observed?: number }>;
   recordError(regionId: number, error: string | null, timestamp: string): Promise<void>;
   releaseRegionLock(regionId: number, runId: string): Promise<void>;
@@ -252,6 +253,9 @@ export async function runPriorityRegion(options: {
     totalPages = state?.total_pages == null ? null : Number(state.total_pages);
     if (!state) throw new Error("No se pudo volver a leer el checkpoint prioritario");
     if ((windowFrom === null) !== (windowTo === null)) throw new Error("El checkpoint prioritario tiene una ventana incompleta");
+    if (windowFrom && windowTo && (state.date_mode ?? "strict_utc") !== (options.dateMode ?? "strict_utc")) {
+      throw new Error("El checkpoint tiene otra configuración horaria; continúa con su modo guardado o aplica el procedimiento de recuperación antes de cambiarlo");
+    }
     if (!windowFrom || !windowTo) {
       let proposedFrom = state.cursor_success
         ? new Date(Date.parse(state.cursor_success) - OVERLAP_MS).toISOString()
@@ -272,7 +276,7 @@ export async function runPriorityRegion(options: {
         windowTo = options.startedAt;
         page = 1;
         totalPages = null;
-        await repository.startWindow(regionId, windowFrom, windowTo, runId, nowIso);
+        await repository.startWindow(regionId, windowFrom, windowTo, runId, nowIso, options.dateMode ?? "strict_utc");
       }
     }
 
@@ -339,7 +343,7 @@ export async function runPriorityRegion(options: {
       await assertLock();
       const committed = await repository.commitPage({
         regionId, runId, page, totalPages, complete, windowTo, items: uniqueItems,
-        lastChangeZIsChileLocal: options.dateMode === "chile_wall_z",
+        dateMode: options.dateMode ?? "strict_utc",
       });
       inserted += committed.inserted;
       updated += committed.updated;

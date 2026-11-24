@@ -246,7 +246,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         continue;
       }
       let { data: state, error: stateError } = await db.from("compra_agil_sync_state")
-        .select("cursor_success, window_from, window_to, next_page, total_pages, lock_until")
+        .select("cursor_success, window_from, window_to, next_page, total_pages, lock_until, date_mode")
         .eq("region_id", regionId).maybeSingle();
       if (stateError || !state) return json({ error: "Falta aplicar la migración local de checkpoints compra_agil_sync_state" }, 503);
       const now = new Date();
@@ -264,7 +264,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
       }
 
       const lockedStateResult = await db.from("compra_agil_sync_state")
-        .select("cursor_success, window_from, window_to, next_page, total_pages, lock_until")
+        .select("cursor_success, window_from, window_to, next_page, total_pages, lock_until, date_mode")
         .eq("region_id", regionId).eq("lock_token", runId).single();
       if (lockedStateResult.error || !lockedStateResult.data) {
         await db.from("compra_agil_sync_state").update({ lock_until: new Date(0).toISOString(), lock_token: null }).eq("region_id", regionId).eq("lock_token", runId);
@@ -289,6 +289,13 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
       let windowTo = state.window_to as string | null;
       let page = Number(state.next_page || 1);
       let totalPages = state.total_pages == null ? null : Number(state.total_pages);
+      if (windowFrom && windowTo && (state.date_mode ?? "strict_utc") !== dateMode) {
+        const message = "La ventana histórica está fijada a otro modo horario; continúe con la configuración guardada o complete la ventana antes de cambiarla";
+        await finish("error", 0, 0, message);
+        await db.from("compra_agil_sync_state").update({ lock_until: new Date(0).toISOString(), lock_token: null, last_error: message }).eq("region_id", regionId).eq("lock_token", runId);
+        summaries.push({ region: regionId, estado: "modo_horario_checkpoint_incompatible", paginas_consultadas: 0, error: message, continuable: true });
+        continue;
+      }
       if (!windowFrom || !windowTo) {
         const proposedFrom = state.cursor_success
           ? new Date(Date.parse(state.cursor_success) - 5 * 60_000).toISOString()
@@ -304,7 +311,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         page = 1;
         totalPages = null;
         const { data: savedWindow, error: windowError } = await db.from("compra_agil_sync_state")
-          .update({ window_from: windowFrom, window_to: windowTo, next_page: 1, total_pages: null })
+          .update({ window_from: windowFrom, window_to: windowTo, date_mode: dateMode, next_page: 1, total_pages: null })
           .eq("region_id", regionId).eq("lock_token", runId).is("window_from", null).is("window_to", null)
           .select("window_from, window_to, next_page, total_pages").maybeSingle();
         if (windowError) {
@@ -316,7 +323,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         // Another manual/cron invocation may have persisted the range before this lock was acquired.
         if (!savedWindow) {
           const { data: currentWindow, error: currentWindowError } = await db.from("compra_agil_sync_state")
-            .select("window_from, window_to, next_page, total_pages")
+            .select("window_from, window_to, date_mode, next_page, total_pages")
             .eq("region_id", regionId).eq("lock_token", runId).single();
           if (currentWindowError || !currentWindow?.window_from || !currentWindow?.window_to) {
             await finish("error", 0, 0, "No se pudo recuperar el rango incremental guardado");
@@ -326,6 +333,13 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
           }
           windowFrom = currentWindow.window_from;
           windowTo = currentWindow.window_to;
+          if ((currentWindow.date_mode ?? "strict_utc") !== dateMode) {
+            const message = "La ventana histórica concurrente quedó fijada a otro modo horario; no se consultaron páginas";
+            await finish("error", 0, 0, message);
+            await db.from("compra_agil_sync_state").update({ lock_until: new Date(0).toISOString(), lock_token: null, last_error: message }).eq("region_id", regionId).eq("lock_token", runId);
+            summaries.push({ region: regionId, estado: "modo_horario_checkpoint_incompatible", paginas_consultadas: 0, error: message, continuable: true });
+            continue;
+          }
           page = Number(currentWindow.next_page || 1);
           totalPages = currentWindow.total_pages == null ? null : Number(currentWindow.total_pages);
         }
@@ -387,11 +401,11 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
             ? Number(reportedPages)
             : items.length < PAGE_SIZE ? page : totalPages;
           complete = totalPages !== null ? page >= totalPages : items.length < PAGE_SIZE;
-          const { data: committed, error: commitError } = await db.rpc("compra_agil_sync_commit_page", {
+          const { data: committed, error: commitError } = await db.rpc("compra_agil_sync_commit_page_with_mode", {
             p_flow: "historical", p_region_id: regionId, p_run_token: runId,
             p_page: page, p_total_pages: totalPages, p_complete: complete,
             p_window_to: windowTo, p_items: validItems,
-            p_last_change_z_is_chile_local: dateMode === "chile_wall_z",
+            p_date_mode: dateMode,
           });
           if (commitError || !committed || !Number.isInteger(committed.inserted) || !Number.isInteger(committed.updated)) {
             throw new Error("El commit transaccional del flujo histórico falló; oportunidades y checkpoint quedaron sin cambios");

@@ -20,7 +20,7 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
     }
     const startedAt = new Date().toISOString();
     const stateResult = await db.from("compra_agil_sync_priority_state")
-      .select("region_id, cursor_success, window_from, window_to, next_page, total_pages, last_attempt_at")
+      .select("region_id, cursor_success, window_from, window_to, next_page, total_pages, last_attempt_at, date_mode")
       .eq("region_id", regionId).maybeSingle();
     if (stateResult.error || !stateResult.data) return { error: "Falta aplicar y verificar la migración de checkpoints prioritarios" };
 
@@ -53,7 +53,7 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
     };
     const repository: PrioritySyncRepository = {
       readCheckpoint: async () => {
-        const result = await db.from("compra_agil_sync_priority_state").select("region_id, cursor_success, window_from, window_to, next_page, total_pages, last_attempt_at").eq("region_id", regionId).single();
+        const result = await db.from("compra_agil_sync_priority_state").select("region_id, cursor_success, window_from, window_to, next_page, total_pages, last_attempt_at, date_mode").eq("region_id", regionId).single();
         if (result.error || !result.data) throw new Error("No se pudo leer el checkpoint prioritario");
         return result.data as Checkpoint;
       },
@@ -67,13 +67,13 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
       assertRegionLock: async (_id, ownerRunId, timestamp) => {
         return ownerRunId === runId && await assertOwnedLease(timestamp);
       },
-      startWindow: async (_id, from, to, _run, timestamp) => {
+      startWindow: async (_id, from, to, _run, timestamp, dateMode) => {
         if (!await assertLease(timestamp)) throw new Error("Se perdió el bloqueo regional antes de iniciar la ventana");
-        const result = await db.from("compra_agil_sync_priority_state").update({ window_from: from, window_to: to, next_page: 1, total_pages: null, last_attempt_at: timestamp, last_error: null, updated_at: timestamp }).eq("region_id", regionId).eq("lock_token", runId).is("window_from", null).is("window_to", null).select("region_id").maybeSingle();
+        const result = await db.from("compra_agil_sync_priority_state").update({ window_from: from, window_to: to, date_mode: dateMode, next_page: 1, total_pages: null, last_attempt_at: timestamp, last_error: null, updated_at: timestamp }).eq("region_id", regionId).eq("lock_token", runId).is("window_from", null).is("window_to", null).select("region_id").maybeSingle();
         if (result.error || !result.data) throw new Error("No se pudo guardar la ventana prioritaria");
       },
       commitPage: async (input: PageCommit) => {
-        const { data, error } = await db.rpc("compra_agil_sync_commit_page", {
+        const { data, error } = await db.rpc("compra_agil_sync_commit_page_with_mode", {
           p_flow: "priority",
           p_region_id: input.regionId,
           p_run_token: input.runId,
@@ -82,7 +82,7 @@ export async function runPrioritySync(options: { db: Db; ticket: string; regions
           p_complete: input.complete,
           p_window_to: input.windowTo,
           p_items: input.items,
-          p_last_change_z_is_chile_local: input.lastChangeZIsChileLocal,
+          p_date_mode: input.dateMode,
         });
         if (error || !data || !Number.isInteger(data.inserted) || !Number.isInteger(data.updated)) {
           throw new Error("La operación transaccional del flujo prioritario falló; datos y checkpoint no se confirmaron");

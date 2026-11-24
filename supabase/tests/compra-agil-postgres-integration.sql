@@ -23,17 +23,21 @@ alter table public.compra_agil_oportunidades enable row level security;
 \ir ../migrations/20261118000100_compra_agil_sync_checkpoints.sql
 \ir ../migrations/20261123000100_compra_agil_sync_priority_checkpoints.sql
 \ir ../migrations/20261123000200_compra_agil_sync_atomic_commit.sql
+\ir ../migrations/20261123000300_compra_agil_sync_checkpoint_date_mode.sql
 update public.compra_agil_sync_state set window_from='2026-11-09T00:00:00Z',window_to='2026-11-18T00:00:00Z',next_page=31,total_pages=99 where region_id=9;
 update public.compra_agil_sync_priority_state set window_from='2026-11-23T00:00:00Z',window_to='2026-11-24T00:00:00Z',next_page=1,total_pages=4 where region_id=9;
 -- Repeat to verify safe reapplication without resetting either cursor.
 \ir ../migrations/20261118000100_compra_agil_sync_checkpoints.sql
 \ir ../migrations/20261123000100_compra_agil_sync_priority_checkpoints.sql
 \ir ../migrations/20261123000200_compra_agil_sync_atomic_commit.sql
+\ir ../migrations/20261123000300_compra_agil_sync_checkpoint_date_mode.sql
 do $$ begin
   if (select next_page from public.compra_agil_sync_state where region_id=9) <> 31
      or (select window_to from public.compra_agil_sync_state where region_id=9) <> '2026-11-18T00:00:00Z'
      or (select next_page from public.compra_agil_sync_priority_state where region_id=9) <> 1
-     or (select window_to from public.compra_agil_sync_priority_state where region_id=9) <> '2026-11-24T00:00:00Z' then
+     or (select window_to from public.compra_agil_sync_priority_state where region_id=9) <> '2026-11-24T00:00:00Z'
+     or (select date_mode from public.compra_agil_sync_state where region_id=9) <> 'strict_utc'
+     or (select date_mode from public.compra_agil_sync_priority_state where region_id=9) <> 'strict_utc' then
     raise exception 'Reaplicar migraciones reinició un checkpoint';
   end if;
 end $$;
@@ -56,9 +60,10 @@ begin
   if has_table_privilege('anon', 'public.compra_agil_sync_observations', 'select')
      or has_table_privilege('authenticated', 'public.compra_agil_sync_observations', 'select')
      or has_table_privilege('service_role', 'public.compra_agil_sync_observations', 'select')
-     or has_function_privilege('anon', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,boolean)', 'execute')
-     or has_function_privilege('authenticated', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,boolean)', 'execute')
-     or not has_function_privilege('service_role', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,boolean)', 'execute') then
+     or has_function_privilege('anon', 'public.compra_agil_sync_commit_page_with_mode(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,text)', 'execute')
+     or has_function_privilege('authenticated', 'public.compra_agil_sync_commit_page_with_mode(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,text)', 'execute')
+     or not has_function_privilege('service_role', 'public.compra_agil_sync_commit_page_with_mode(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,text)', 'execute')
+     or has_function_privilege('service_role', 'public.compra_agil_sync_commit_page(text,smallint,uuid,integer,integer,boolean,timestamptz,jsonb,boolean)', 'execute') then
     raise exception 'Permisos observados no coinciden con el acceso privado esperado';
   end if;
   if has_table_privilege('anon', 'public.compra_agil_sync_priority_state', 'select')
@@ -72,6 +77,7 @@ begin
   where region_id = 9;
   update public.compra_agil_sync_priority_state set
     lock_token = v_token, window_from = '2026-11-23T00:00:00Z', window_to = v_window_to, next_page = 1, total_pages = 4
+    , date_mode = 'chile_wall_z'
   where region_id = 9;
 
   select public.compra_agil_sync_commit_page('priority', 9::smallint, v_token, 1, 4, false, v_window_to,
@@ -82,6 +88,15 @@ begin
   select * into v_priority from public.compra_agil_sync_priority_state where region_id = 9;
   if v_historical.next_page <> 31 or v_historical.window_to <> '2026-11-18T00:00:00Z' or v_priority.next_page <> 2 then
     raise exception 'La página prioritaria alteró/ignoró los checkpoints separados';
+  end if;
+  v_failed := false;
+  begin
+    perform public.compra_agil_sync_commit_page_with_mode('priority', 9::smallint, v_token, 2, 4, false, v_window_to,
+      '[]'::jsonb, 'strict_utc');
+  exception when sqlstate '40001' then v_failed := true;
+  end;
+  if not v_failed or (select next_page from public.compra_agil_sync_priority_state where region_id=9) <> 2 then
+    raise exception 'El RPC permitió cambiar la configuración horaria a mitad de ventana';
   end if;
   if (select fecha_cierre from public.compra_agil_oportunidades where codigo = '555-1-COT26') <> '2026-11-17T19:28:00Z'::timestamptz then
     raise exception 'Fecha sin zona no se normalizó a America/Santiago (DST noviembre)';
@@ -175,8 +190,8 @@ update public.compra_agil_sync_state set lock_token = '00000000-0000-4000-8000-0
 update public.compra_agil_sync_state set lock_token = '00000000-0000-4000-8000-000000000014',
   lock_until = clock_timestamp() + interval '5 minutes', window_from = '2026-11-23T00:00:00Z',
   window_to = '2026-11-24T00:00:00Z', next_page = 1, total_pages = 2 where region_id = 14;
-update public.compra_agil_sync_priority_state set lock_token = '00000000-0000-4000-8000-000000000014',
-  window_from = '2026-11-23T00:00:00Z', window_to = '2026-11-24T00:00:00Z', next_page = 1, total_pages = 2 where region_id = 14;
+  update public.compra_agil_sync_priority_state set lock_token = '00000000-0000-4000-8000-000000000014',
+  window_from = '2026-11-23T00:00:00Z', window_to = '2026-11-24T00:00:00Z', next_page = 1, total_pages = 2, date_mode='strict_utc' where region_id = 14;
 create function public.test_delay_concurrent_insert() returns trigger language plpgsql as $$
 begin if new.codigo = '888-1-COT26' then perform pg_sleep(2); end if; return new; end $$;
 create trigger test_delay_concurrent_insert before insert on public.compra_agil_oportunidades
