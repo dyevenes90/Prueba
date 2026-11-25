@@ -9,7 +9,7 @@ Este procedimiento crea un archivo PostgreSQL custom del esquema `public`. Es un
 3. Desde PowerShell integrado de VS Code en una copia limpia de la rama PR, ejecuta el formulario nativo (si trabajas con PowerShell 5.1):
 
    ```powershell
-   powershell.exe -STA -NoProfile -File .\tools\backup-cresce.ps1 -PgBinDirectory 'D:\Programar\pgsql\bin'
+   powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File .\tools\backup-cresce.ps1 -PgBinDirectory 'D:\Programar\pgsql\bin'
    ```
 
    El formulario permite pegar los campos, enmascara la contraseña y muestra los errores. También puedes ejecutarlo sin `-PgBinDirectory`; detecta `D:\Programar\pgsql\bin` y varias carpetas privadas comunes.
@@ -17,10 +17,14 @@ Este procedimiento crea un archivo PostgreSQL custom del esquema `public`. Es un
    Alternativa de consola (sin formulario):
 
    ```powershell
-   .\tools\backup-cresce.ps1 -Console -PgBinDirectory 'D:\Programar\pgsql\bin'
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\backup-cresce.ps1 -Console -PgBinDirectory 'D:\Programar\pgsql\bin'
    ```
 
-4. Los campos no sensibles se pueden recordar opcionalmente en `%LOCALAPPDATA%\CRESCE\backup-settings\connection.json`, con ACL limitada a tu cuenta Windows. **No guarda la contraseña.** La carpeta predeterminada del dump es `%LOCALAPPDATA%\CRESCE\backups`, fuera del repositorio. El script restringe también el archivo libpq temporal, exige TLS (`PGSSLMODE=require`) y lo elimina al salir; la contraseña no aparece en argumentos ni logs. No guarda host, usuario ni contraseña en el manifiesto.
+4. Los campos no sensibles se pueden recordar opcionalmente en `%LOCALAPPDATA%\CRESCE\backup-settings\connection.json`. **No guarda la contraseña.** La carpeta predeterminada del dump es `%LOCALAPPDATA%\CRESCE\backups`, fuera del repositorio. El script conserva la ACL heredada de Windows y verifica que solo permita acceso a la cuenta actual, SYSTEM y Administradores; si encuentra otro usuario o grupo permitido, se detiene sin intentar cambiar permisos. El archivo libpq temporal hereda esa ACL, exige TLS (`PGSSLMODE=require`) y se elimina al salir; la contraseña no aparece en argumentos ni logs. No guarda host, usuario ni contraseña en el manifiesto.
+
+5. Si el formulario no continúa al marcar **Recordar solo host, puerto, base y usuario**, revisa el mensaje de permisos. El guardado de esos datos se valida antes de cerrar el formulario. Desmarcar la opción no desactiva controles: la carpeta temporal y la carpeta del respaldo también deben pasar la misma validación privada.
+
+El script no reescribe ACL heredadas ni necesita privilegios de administrador. En particular, no usa `Set-Acl`, no desactiva herencia y no elimina ACE de SYSTEM o Administradores. Una ACL insegura produce un error y el respaldo no inicia. `-ExecutionPolicy Bypass` en los comandos solo permite ejecutar este script en una sesión de PowerShell cuando la política predeterminada es `Restricted`; no cambia la configuración persistente del equipo. No elude el antivirus.
 
 Antes de cualquier preparación de activación, se puede revisar el estado estático local, sin conectar a Supabase:
 
@@ -34,7 +38,7 @@ El preflight informa archivos de migración y `verify_jwt`, y revisa en el códi
 
 El script exige versión mayor 17 para las tres herramientas, ejecuta `pg_dump` de solo lectura para `public`, comprueba `pg_restore --list`, tamaño y SHA-256. Lee el conteo de `compra_agil_oportunidades` y cuenta/fingerprint de checkpoints históricos y prioritarios (si la tabla prioritaria existe) antes y después del dump. Informa si esos datos cambiaron durante la operación; un resultado inestable no se presenta como captura estable. El manifiesto JSON contiene rutas relativas/nombre de archivo, versiones, huella y conteos, nunca datos de conexión.
 
-Las pruebas automatizadas del helper Windows se ejecutan sin conectar con `pwsh -NoProfile -File .\tools\backup-cresce.tests.ps1`. En este equipo la ejecución local de scripts PowerShell quedó bloqueada por la política vigente; no se elude. GitHub Actions ejecuta esas pruebas en Windows y restaura un custom dump **sintético** en una base PostgreSQL aislada, comparando tres filas conocidas. Esa prueba demuestra el procedimiento con datos falsos; no restaura el dump productivo ni prueba que este respaldo real sea íntegro.
+Las pruebas automatizadas del helper Windows se ejecutan sin conectar con `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\backup-cresce.tests.ps1`. El override se aplica solo al proceso de prueba y no persiste. GitHub Actions ejecuta esas pruebas en Windows y restaura un custom dump **sintético** en una base PostgreSQL aislada, comparando tres filas conocidas. Esa prueba demuestra el procedimiento con datos falsos; no restaura el dump productivo ni prueba que este respaldo real sea íntegro.
 
 El dump y el manifiesto contienen o describen información comercial privada. Mantén esa carpeta protegida y no los subas a GitHub. No envíes el dump por correo ni lo coloques en carpetas sincronizadas públicamente.
 

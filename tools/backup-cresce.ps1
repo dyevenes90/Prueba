@@ -8,23 +8,57 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Set-PrivateDirectoryAcl([string]$Path) {
-    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-    $acl = Get-Acl -LiteralPath $Path
-    $acl.SetAccessRuleProtection($true, $false)
-    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }
-    $rights = [System.Security.AccessControl.FileSystemRights]::FullControl
-    $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-        $identity, $rights, $inherit, [System.Security.AccessControl.PropagationFlags]::None,
-        [System.Security.AccessControl.AccessControlType]::Allow)
-    [void]$acl.AddAccessRule($rule)
-    Set-Acl -LiteralPath $Path -AclObject $acl
+function Test-PrivateAclRules($Rules, [string]$OwnerSid) {
+    $identitySid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $safeSids = @($identitySid, 'S-1-5-18', 'S-1-5-32-544') | Where-Object { $_ } | Select-Object -Unique
+    if ($OwnerSid -and $OwnerSid -notin $safeSids) {
+        throw 'El propietario de la carpeta o archivo no es la cuenta actual, SYSTEM ni Administradores. Se detiene el respaldo por seguridad.'
+    }
+    foreach ($rule in $Rules) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        try { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+        catch { throw 'No se puede verificar una identidad permitida en la ACL. Se detiene el respaldo por seguridad.' }
+        if ($sid -notin $safeSids) {
+            throw 'La carpeta o archivo permite acceso a otra identidad de Windows. Se detiene el respaldo; revisa los permisos con el administrador del equipo.'
+        }
+    }
+    return $true
+}
+
+function Assert-PrivatePath([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { throw "No existe la ruta privada que se debe validar: $Path" }
+    try { $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop }
+    catch { throw 'Windows no permitió verificar los permisos del almacenamiento privado. No se creó ni utilizó el archivo de credenciales.' }
+    try { $ownerSid = ([System.Security.Principal.NTAccount]$acl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value }
+    catch { $ownerSid = $null }
+    Test-PrivateAclRules -Rules @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) -OwnerSid $ownerSid | Out-Null
+    return $true
+}
+
+function Ensure-PrivateDirectory([string]$Path) {
+    try { New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null }
+    catch { throw 'No se pudo crear la carpeta privada. Comprueba que LOCALAPPDATA tenga permisos de escritura.' }
+    # No se reemplaza ni se protege la ACL: las carpetas nuevas heredan la seguridad de Windows.
+    Assert-PrivatePath $Path | Out-Null
+}
+
+function Remove-TemporaryCredentialDirectory([string]$Path) {
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+    }
 }
 
 function Invoke-PgTool([string]$Executable, [string[]]$Arguments, [switch]$Capture) {
-    if ($Capture) { $result = @(& $Executable @Arguments 2>$null) }
-    else { $null = & $Executable @Arguments 2>$null }
+    try {
+        if ($Capture) { $result = @(& $Executable @Arguments 2>$null) }
+        else { $null = & $Executable @Arguments 2>$null }
+    } catch {
+        $tool = [IO.Path]::GetFileName($Executable)
+        if ($tool -match '^psql') { throw 'No se pudo leer Supabase. Revisa host, usuario, acceso de red y TLS.' }
+        if ($tool -match '^pg_dump') { throw 'pg_dump no pudo crear el respaldo. Revisa permisos de lectura y espacio disponible.' }
+        if ($tool -match '^pg_restore') { throw 'pg_restore no pudo validar el archivo. El respaldo puede estar truncado.' }
+        throw 'La herramienta PostgreSQL fallo; su salida se oculto por seguridad.'
+    }
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         $tool = [IO.Path]::GetFileName($Executable)
@@ -80,13 +114,13 @@ function Get-ConnectionConfig([string]$Path) {
 
 function Save-ConnectionConfig([string]$Path, [hashtable]$Connection) {
     $parent = Split-Path -Parent $Path
-    New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    Set-PrivateDirectoryAcl $parent
+    Ensure-PrivateDirectory $parent
+    if (Test-Path -LiteralPath $Path -PathType Leaf) { Assert-PrivatePath $Path | Out-Null }
     $saved = [ordered]@{ host=$Connection.host; port=$Connection.port; database=$Connection.database; user=$Connection.user; pgBinDirectory=$Connection.pgBinDirectory }
     $json = $saved | ConvertTo-Json
     if ($json -match '(?i)password|secret|token') { throw 'Se bloqueó el guardado de un campo sensible.' }
     [IO.File]::WriteAllText($Path, $json, [Text.UTF8Encoding]::new($true))
-    Set-PrivateDirectoryAcl $parent
+    Assert-PrivatePath $Path | Out-Null
 }
 
 function ConvertTo-SecureInput([string]$Value) {
@@ -168,14 +202,30 @@ function Assert-BackupSelfTests {
     $args = New-DumpArgs 'host.example' '5432' 'postgres' 'user.name' 'C:\private\dump file.dump'
     if (($args -join ' ') -notmatch '--format=custom.*--schema=public' -or ($args -join ' ') -match 'password=|SECRET_MARKER') { throw 'Argumentos de dump incorrectos o con datos sensibles.' }
     if ((Escape-PgPassField 'a:b\c') -ne 'a\:b\\c') { throw 'Escape incorrecto de campos pgpass.' }
-    $testRoot=Join-Path $env:TEMP ('cresce-backup-tests-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $testRoot | Out-Null
+    $testRoot=Join-Path $env:LOCALAPPDATA ('CRESCE-backup-tests-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $testRoot | Out-Null
     try {
+        Assert-PrivatePath $testRoot | Out-Null
+        $testAcl = Get-Acl -LiteralPath $testRoot
+        $testOwner = ([System.Security.Principal.NTAccount]$testAcl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value
+        Test-PrivateAclRules -Rules @($testAcl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])) -OwnerSid $testOwner | Out-Null
+        $unsafeRules = @([System.Security.AccessControl.FileSystemAccessRule]::new(
+            ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-545'),
+            [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
+            [System.Security.AccessControl.AccessControlType]::Allow))
+        $failed=$false; try { Test-PrivateAclRules -Rules $unsafeRules -OwnerSid $testOwner | Out-Null } catch { $failed=$_.Exception.Message -match 'otra identidad' }; if (-not $failed) { throw 'No se rechazaron permisos heredados de usuarios ordinarios.' }
+        $missingAcl=$false; try { Assert-PrivatePath (Join-Path $testRoot 'missing') | Out-Null } catch { $missingAcl=$_.Exception.Message -match 'No existe la ruta privada' }; if (-not $missingAcl) { throw 'No se detectó una ruta de permisos inaccesible.' }
+        $tempCredentials=Join-Path $testRoot 'credential-temp'; New-Item -ItemType Directory $tempCredentials | Out-Null
+        $syntheticPass=Join-Path $tempCredentials 'pgpass.conf'; [IO.File]::WriteAllText($syntheticPass,'synthetic-only')
+        Assert-PrivatePath $syntheticPass | Out-Null
+        Remove-TemporaryCredentialDirectory $tempCredentials
+        if (Test-Path -LiteralPath $syntheticPass) { throw 'No se limpió el archivo temporal de credenciales sintéticas.' }
         $file=Join-Path $testRoot 'synthetic.dump'; [IO.File]::WriteAllBytes($file,(New-Object byte[] 600)); $meta=Get-BackupFileMetadata $file
         if ($meta.bytes -ne 600 -or $meta.sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Verificación sintética de tamaño/SHA-256 falló.' }
         $small=Join-Path $testRoot 'small.dump'; [IO.File]::WriteAllBytes($small,(New-Object byte[] 8)); $failed=$false; try { Get-BackupFileMetadata $small | Out-Null } catch { $failed=$true }; if (-not $failed) { throw 'Se aceptó un archivo truncado.' }
         $config=Join-Path $testRoot 'connection.json'; Save-ConnectionConfig $config @{host='host.example';port='5432';database='postgres';user='reader';pgBinDirectory='D:\Programar\pgsql\bin'}
         $raw=Get-Content $config -Raw -Encoding UTF8
         if ($raw -match '(?i)password|secret|token' -or (Get-ConnectionConfig $config).host -ne 'host.example') { throw 'La configuración no sensible falló.' }
+        Assert-PrivatePath $config | Out-Null
         [IO.File]::WriteAllText($config, '{"host":"host.example","port":"5432","database":"postgres","user":"reader","password":"must-not-be-read"}')
         $failed=$false; try { Get-ConnectionConfig $config | Out-Null } catch { $failed=$true }; if (-not $failed) { throw 'Se aceptó una configuración con campo de contraseña.' }
         $failed=$false; try { Get-BackupFileMetadata (Join-Path $testRoot 'missing.dump') | Out-Null } catch { $failed=$true }; if (-not $failed) { throw 'No se detectó un archivo faltante.' }
@@ -246,15 +296,15 @@ try {
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
     if ($password -match '[\r\n]') { throw 'La contraseña contiene saltos de línea no compatibles con el archivo temporal libpq.' }
 
-    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
-    Set-PrivateDirectoryAcl -Path $tempRoot
+    Ensure-PrivateDirectory -Path $tempRoot
     $runDirectory = Join-Path $tempRoot ([guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $runDirectory | Out-Null
-    Set-PrivateDirectoryAcl -Path $runDirectory
+    Assert-PrivatePath -Path $runDirectory | Out-Null
     $passFile = Join-Path $runDirectory 'pgpass.conf'
     $escapedPassword = Escape-PgPassField $password
     $passLine = '{0}:{1}:{2}:{3}:{4}' -f (Escape-PgPassField $hostName), (Escape-PgPassField $port), (Escape-PgPassField $database), (Escape-PgPassField $userName), $escapedPassword
     [IO.File]::WriteAllText($passFile, $passLine, [Text.UTF8Encoding]::new($false))
+    Assert-PrivatePath -Path $passFile | Out-Null
     $password = $null; $escapedPassword = $null; $passLine = $null; $securePassword.Dispose(); $securePassword = $null
     $env:PGPASSFILE = $passFile
     $env:PGSSLMODE = 'require'
@@ -265,9 +315,8 @@ try {
     if ($fullBackupPath.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or $fullBackupPath.StartsWith($repoRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
         throw 'La carpeta de respaldo debe estar fuera del repositorio.'
     }
-    New-Item -ItemType Directory -Path $fullBackupPath -Force | Out-Null
+    Ensure-PrivateDirectory -Path $fullBackupPath
     $BackupDirectory = (Resolve-Path $fullBackupPath).Path
-    Set-PrivateDirectoryAcl -Path $BackupDirectory
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
     $backupPath = Join-Path $BackupDirectory "cresce-public-$stamp.dump"
     $manifestPath = Join-Path $BackupDirectory "cresce-public-$stamp.manifest.json"
@@ -309,7 +358,8 @@ try {
         restore_note = 'This is not a complete Supabase project backup or a guarantee of point-in-time consistency; test restore in an isolated project before relying on it.'
     }
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
-    Set-PrivateDirectoryAcl -Path $BackupDirectory
+    Assert-PrivatePath -Path $backupPath | Out-Null
+    Assert-PrivatePath -Path $manifestPath | Out-Null
     Write-Host "Respaldo validado: $backupPath"
     Write-Host "Manifiesto sin credenciales: $manifestPath"
     Write-Host "SHA-256: $($metadata.sha256) | Oportunidades antes/después: $($before.opportunities)/$($after.opportunities)"
@@ -327,7 +377,10 @@ finally {
     $env:PGPASSFILE = $oldPassfile
     $env:PGSSLMODE = $oldSslmode
     $env:PGCONNECT_TIMEOUT = $oldConnectTimeout
-    if ($runDirectory -and (Test-Path -LiteralPath $runDirectory)) { Remove-Item -LiteralPath $runDirectory -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($runDirectory -and (Test-Path -LiteralPath $runDirectory)) {
+        try { Remove-TemporaryCredentialDirectory $runDirectory }
+        catch { Write-Warning "No se pudo limpiar el archivo temporal de credenciales en '$runDirectory'. Elimínalo manualmente de inmediato; no compartas su contenido." }
+    }
     if ($securePassword) { $securePassword.Dispose() }
     $password = $null; $escapedPassword = $null; $passLine = $null
 }
