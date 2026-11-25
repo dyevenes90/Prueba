@@ -32,6 +32,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Syntax-check local operational preflight
+        run: node --check tools/preflight-compra-agil.mjs
+      - name: Verify synthetic public dump and restore
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: cresce_ci_only
+          PGDATABASE: cresce_ci
+        run: bash supabase/tests/backup-restore-synthetic.sh
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.8.0
@@ -47,3 +57,11 @@ jobs:
           PGPASSWORD: cresce_ci_only
           PGDATABASE: cresce_ci
         run: bash supabase/tests/compra-agil-postgres-integration.sh
+
+  windows-backup-script:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Windows backup script helpers without connecting
+        shell: pwsh
+        run: ./tools/backup-cresce.tests.ps1
