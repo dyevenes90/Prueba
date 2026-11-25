@@ -1,0 +1,86 @@
+name: Compra Agil PostgreSQL integration
+
+on:
+  pull_request:
+    branches: [design/cresce-holding-vhs-20261121]
+  push:
+    branches: [review/compra-agil-doble-flujo-20261123]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: cresce_ci_only
+          POSTGRES_DB: cresce_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cresce_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Syntax-check local operational preflight
+        run: node --check tools/preflight-compra-agil.mjs
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.8.0
+      - name: Run Compra Ágil unit tests
+        run: deno test supabase/functions/_shared/compra-agil-sync-engine_test.ts supabase/functions/_shared/compra-agil-sync-auth_test.ts supabase/functions/_shared/compra-agil-priority-service_test.ts
+      - name: Validate offline Compra Ágil fixture tool
+        run: node supabase/ops_compra_agil_fixture_test.mjs
+      - name: Apply migrations and run PostgreSQL assertions
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: cresce_ci_only
+          PGDATABASE: cresce_ci
+        run: bash supabase/tests/compra-agil-postgres-integration.sh
+
+  backup-restore-synthetic:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: cresce_ci_only
+          POSTGRES_DB: cresce_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cresce_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify synthetic public dump and restore
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: cresce_ci_only
+          PGDATABASE: cresce_ci
+        run: bash supabase/tests/backup-restore-synthetic.sh
+
+  windows-backup-script:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Windows backup script helpers without connecting
+        shell: pwsh
+        run: ./tools/backup-cresce.tests.ps1

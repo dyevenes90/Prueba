@@ -1,4 +1,6 @@
 import { withSupabase } from "npm:@supabase/server@1";
+import { DEFAULT_PRIORITY_BOOTSTRAP_HOURS, formatChangeWindowForApi, MAX_PRIORITY_BOOTSTRAP_HOURS, parseApiDateMode } from "../_shared/compra-agil-sync-engine.ts";
+import { authorizeSyncAction, MANUAL_ONE_PAGE_ACTION } from "../_shared/compra-agil-sync-auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -112,17 +114,16 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
     return json({ error: "Cuerpo JSON inválido" }, 400);
   }
   if (!isRecord(requestBody)) return json({ error: "El cuerpo debe ser un objeto JSON" }, 400);
-  const isUser = ctx.authMode === "user";
-  if (isUser) {
-    const allowedIds = (Deno.env.get("CRESCE_ALLOWED_USER_IDS") ?? "").split(/[\s,]+/).filter(Boolean);
-    if (!allowedIds.length || typeof ctx.userClaims?.id !== "string" || !allowedIds.includes(ctx.userClaims.id)) {
-      return json({ error: "Usuario no autorizado para Compra Ágil" }, 403);
-    }
-    if (requestBody.accion === "sincronizacion_programada") return json({ error: "Acción reservada para Cron" }, 403);
-  } else if (requestBody.accion !== "sincronizacion_programada") {
-    return json({ error: "La clave de Cron solo permite sincronizaciones programadas" }, 403);
-  }
-  if (requestBody.accion !== undefined && !["detalle", "sincronizar_regiones", "buscar_compras_nuevas", "sincronizacion_programada"].includes(String(requestBody.accion))) {
+  const allowedIds = (Deno.env.get("CRESCE_ALLOWED_USER_IDS") ?? "").split(/[\s,]+/).filter(Boolean);
+  const authorization = authorizeSyncAction({
+    authMode: ctx.authMode ?? null,
+    authKeyName: ctx.authKeyName,
+    userId: ctx.userClaims?.id,
+    allowedUserIds: allowedIds,
+    action: typeof requestBody.accion === "string" ? requestBody.accion : undefined,
+  });
+  if (!authorization.allowed) return json({ error: authorization.error }, authorization.status);
+  if (requestBody.accion !== undefined && !["detalle", "sincronizar_regiones", "buscar_compras_nuevas", MANUAL_ONE_PAGE_ACTION, "continuar_historico", "sincronizacion_programada", "sincronizacion_prioritaria_programada"].includes(String(requestBody.accion))) {
     return json({ error: "Acción no válida" }, 400);
   }
 
@@ -185,8 +186,44 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
 
   if (requestBody.accion === undefined) return json({ error: "Se requiere una acción explícita" }, 400);
 
-  if (["buscar_compras_nuevas", "sincronizacion_programada", "sincronizar_regiones"].includes(String(requestBody.accion))) {
+  if (["buscar_compras_nuevas", "sincronizacion_prioritaria_programada", MANUAL_ONE_PAGE_ACTION].includes(String(requestBody.accion))) {
+    const ticket = Deno.env.get("MERCADOPUBLICO_TICKET");
+    if (!ticket) return json({ error: "Configuración del servicio incompleta" }, 500);
+    let dateMode;
+    try { dateMode = parseApiDateMode(Deno.env.get("COMPRA_AGIL_API_DATE_MODE")); }
+    catch (error) { return json({ error: error instanceof Error ? error.message : "Configuración de fechas inválida" }, 500); }
+    const scheduled = requestBody.accion === "sincronizacion_prioritaria_programada";
+    const onePageManual = requestBody.accion === MANUAL_ONE_PAGE_ACTION;
+    const regions = onePageManual ? [9] : Array.isArray(requestBody.regiones) ? requestBody.regiones.map(Number) : [9, 14];
+    if (requestBody.accion === "buscar_compras_nuevas") {
+      const { priorityCheckpointHasSuccessfulPage } = await import("../_shared/compra-agil-priority-service.ts");
+      const checkpointResult = await ctx.supabaseAdmin.from("compra_agil_sync_priority_state")
+        .select("cursor_success, window_from, window_to, next_page").eq("region_id", 9).maybeSingle();
+      if (checkpointResult.error || !checkpointResult.data) return json({ error: "Falta el checkpoint prioritario; aplique primero las migraciones revisadas" }, 503);
+      if (!priorityCheckpointHasSuccessfulPage(checkpointResult.data)) return json({ error: "Antes de la sincronización manual completa, ejecute la prueba limitada de una página para Araucanía" }, 409);
+    }
+    const requestedBootstrapFrom = typeof requestBody.cambio_desde === "string" && Number.isFinite(Date.parse(requestBody.cambio_desde))
+      ? new Date(requestBody.cambio_desde).toISOString() : null;
+    const rawBootstrapHours = Deno.env.get("COMPRA_AGIL_PRIORITY_BOOTSTRAP_HOURS");
+    const bootstrapWindowHours = scheduled || onePageManual
+      ? rawBootstrapHours === undefined ? DEFAULT_PRIORITY_BOOTSTRAP_HOURS : Number(rawBootstrapHours)
+      : null;
+    if ((scheduled || onePageManual) && (!Number.isInteger(bootstrapWindowHours) || bootstrapWindowHours! < 1 || bootstrapWindowHours! > MAX_PRIORITY_BOOTSTRAP_HOURS)) {
+      return json({ error: `COMPRA_AGIL_PRIORITY_BOOTSTRAP_HOURS debe ser entero de 1 a ${MAX_PRIORITY_BOOTSTRAP_HOURS}` }, 500);
+    }
+    const bootstrapFrom = scheduled || onePageManual ? null : requestedBootstrapFrom;
+    const result = await import("../_shared/compra-agil-priority-service.ts").then(({ runPrioritySync }) => runPrioritySync({
+      db: ctx.supabaseAdmin, ticket, regions, bootstrapFrom, bootstrapWindowHours, scheduled, onePageManual,
+      dateMode,
+    }));
+    return json(result, "error" in result ? 503 : 200);
+  }
+
+  if (["continuar_historico", "sincronizacion_programada", "sincronizar_regiones"].includes(String(requestBody.accion))) {
     const db = ctx.supabaseAdmin;
+    let dateMode;
+    try { dateMode = parseApiDateMode(Deno.env.get("COMPRA_AGIL_API_DATE_MODE")); }
+    catch (error) { return json({ error: error instanceof Error ? error.message : "Configuración de fechas inválida" }, 500); }
     const scheduled = requestBody.accion === "sincronizacion_programada";
     const requestedRegions = scheduled ? Object.keys(REGIONS).map(Number)
       : Array.isArray(requestBody.regiones) ? requestBody.regiones
@@ -216,8 +253,8 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         summaries.push({ region: regionId, estado: "pendiente_por_limite", paginas_consultadas: 0 });
         continue;
       }
-      const { data: state, error: stateError } = await db.from("compra_agil_sync_state")
-        .select("cursor_success, window_from, window_to, next_page, total_pages, lock_until")
+      let { data: state, error: stateError } = await db.from("compra_agil_sync_state")
+        .select("cursor_success, window_from, window_to, next_page, total_pages, lock_until, date_mode")
         .eq("region_id", regionId).maybeSingle();
       if (stateError || !state) return json({ error: "Falta aplicar la migración local de checkpoints compra_agil_sync_state" }, 503);
       const now = new Date();
@@ -233,6 +270,16 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         summaries.push({ region: regionId, estado: "otra_sincronizacion_en_curso", paginas_consultadas: 0 });
         continue;
       }
+
+      const lockedStateResult = await db.from("compra_agil_sync_state")
+        .select("cursor_success, window_from, window_to, next_page, total_pages, lock_until, date_mode")
+        .eq("region_id", regionId).eq("lock_token", runId).single();
+      if (lockedStateResult.error || !lockedStateResult.data) {
+        await db.from("compra_agil_sync_state").update({ lock_until: new Date(0).toISOString(), lock_token: null }).eq("region_id", regionId).eq("lock_token", runId);
+        summaries.push({ region: regionId, estado: "error", paginas_consultadas: 0, error: "No se pudo releer checkpoint luego de obtener el bloqueo" });
+        continue;
+      }
+      state = lockedStateResult.data;
 
       const executionResult = await db.from("compra_agil_ejecuciones").insert({ estado: "iniciada" }).select("id").single();
       if (executionResult.error || !executionResult.data) {
@@ -250,6 +297,13 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
       let windowTo = state.window_to as string | null;
       let page = Number(state.next_page || 1);
       let totalPages = state.total_pages == null ? null : Number(state.total_pages);
+      if (windowFrom && windowTo && (state.date_mode ?? "strict_utc") !== dateMode) {
+        const message = "La ventana histórica está fijada a otro modo horario; continúe con la configuración guardada o complete la ventana antes de cambiarla";
+        await finish("error", 0, 0, message);
+        await db.from("compra_agil_sync_state").update({ lock_until: new Date(0).toISOString(), lock_token: null, last_error: message }).eq("region_id", regionId).eq("lock_token", runId);
+        summaries.push({ region: regionId, estado: "modo_horario_checkpoint_incompatible", paginas_consultadas: 0, error: message, continuable: true });
+        continue;
+      }
       if (!windowFrom || !windowTo) {
         const proposedFrom = state.cursor_success
           ? new Date(Date.parse(state.cursor_success) - 5 * 60_000).toISOString()
@@ -265,7 +319,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         page = 1;
         totalPages = null;
         const { data: savedWindow, error: windowError } = await db.from("compra_agil_sync_state")
-          .update({ window_from: windowFrom, window_to: windowTo, next_page: 1, total_pages: null })
+          .update({ window_from: windowFrom, window_to: windowTo, date_mode: dateMode, next_page: 1, total_pages: null })
           .eq("region_id", regionId).eq("lock_token", runId).is("window_from", null).is("window_to", null)
           .select("window_from, window_to, next_page, total_pages").maybeSingle();
         if (windowError) {
@@ -277,7 +331,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         // Another manual/cron invocation may have persisted the range before this lock was acquired.
         if (!savedWindow) {
           const { data: currentWindow, error: currentWindowError } = await db.from("compra_agil_sync_state")
-            .select("window_from, window_to, next_page, total_pages")
+            .select("window_from, window_to, date_mode, next_page, total_pages")
             .eq("region_id", regionId).eq("lock_token", runId).single();
           if (currentWindowError || !currentWindow?.window_from || !currentWindow?.window_to) {
             await finish("error", 0, 0, "No se pudo recuperar el rango incremental guardado");
@@ -287,6 +341,13 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
           }
           windowFrom = currentWindow.window_from;
           windowTo = currentWindow.window_to;
+          if ((currentWindow.date_mode ?? "strict_utc") !== dateMode) {
+            const message = "La ventana histórica concurrente quedó fijada a otro modo horario; no se consultaron páginas";
+            await finish("error", 0, 0, message);
+            await db.from("compra_agil_sync_state").update({ lock_until: new Date(0).toISOString(), lock_token: null, last_error: message }).eq("region_id", regionId).eq("lock_token", runId);
+            summaries.push({ region: regionId, estado: "modo_horario_checkpoint_incompatible", paginas_consultadas: 0, error: message, continuable: true });
+            continue;
+          }
           page = Number(currentWindow.next_page || 1);
           totalPages = currentWindow.total_pages == null ? null : Number(currentWindow.total_pages);
         }
@@ -299,20 +360,21 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
         continue;
       }
 
-      let pages = 0, found = 0, inserted = 0, updated = 0;
+      let pages = 0, apiRequests = 0, found = 0, inserted = 0, updated = 0;
       let complete = false, failure: string | null = null;
       try {
         while (requestsLeft > 0 && pages < Math.max(1, Math.floor(MAX_PAGES_PER_RUN / regions.length)) && !complete) {
           const url = new URL("https://api2.mercadopublico.cl/v2/compra-agil");
           url.searchParams.set("region", String(regionId));
-          url.searchParams.set("cambio_desde", windowFrom);
-          url.searchParams.set("cambio_hasta", windowTo);
+          url.searchParams.set("cambio_desde", formatChangeWindowForApi(windowFrom, dateMode));
+          url.searchParams.set("cambio_hasta", formatChangeWindowForApi(windowTo, dateMode));
           url.searchParams.set("tamano_pagina", String(PAGE_SIZE));
           url.searchParams.set("numero_pagina", String(page));
           url.searchParams.set("ordenar_por", "FechaUltimaModificacion");
           let upstream: Response | null = null;
           for (let retry = 0; retry <= MAX_RETRIES && requestsLeft > 0; retry++) {
             requestsLeft--;
+            apiRequests++;
             upstream = await fetch(url, { method: "GET", headers: { ticket, Accept: "application/json" }, signal: AbortSignal.timeout(25_000) });
             if (upstream.ok || upstream.status === 429 || ![502, 503, 504].includes(upstream.status) || retry === MAX_RETRIES) break;
             const retryAfterHeader = upstream.headers.get("Retry-After");
@@ -326,72 +388,38 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
             if (delay > 10_000) break;
             await new Promise((resolve) => setTimeout(resolve, delay));
           }
-          pages++;
           if (!upstream?.ok) {
             failure = upstream?.status === 429 ? "Cuota diaria de ChileCompra agotada; cursor sin avanzar"
               : `API ChileCompra respondió HTTP ${upstream?.status ?? "sin respuesta"}; cursor sin avanzar`;
             break;
           }
+          pages++;
           const body: unknown = await upstream.json();
           if (!isRecord(body) || body.success !== "OK" || !isRecord(body.payload) || !Array.isArray(body.payload.items)) throw new Error("Respuesta inválida de Compra Ágil v2");
           const payload = body.payload as ApiResponse["payload"] & { items: ApiItem[] };
           const items = payload.items;
           if (items.length > PAGE_SIZE) throw new Error("La API excedió el tamaño máximo de página");
           found += items.length;
-          const validItems = items.filter((item) => typeof item.codigo === "string" && item.codigo.length > 0);
-          const codes = [...new Set(validItems.map((item) => item.codigo as string))];
-          const { data: existing, error: readError } = codes.length
-            ? await db.from("compra_agil_oportunidades").select("codigo, primera_deteccion, descripcion, estado, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre").in("codigo", codes)
-            : { data: [], error: null };
-          if (readError) throw new Error("No se pudieron revisar las oportunidades existentes");
-          const prior = new Map((existing ?? []).map((row) => [row.codigo, row]));
-          const timestamp = new Date().toISOString();
-          const rows = validItems.map((item) => {
-            const stateObj = isRecord(item.estado) ? item.estado : {};
-            const institution = isRecord(item.institucion) ? item.institucion : {};
-            const amounts = isRecord(item.montos) ? item.montos : {};
-            const dates = isRecord(item.fechas) ? item.fechas : {};
-            const old = prior.get(item.codigo as string);
-            const safeDate = (value: unknown, fallback: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : fallback ?? null;
-            return {
-              codigo: item.codigo,
-              nombre: typeof item.nombre === "string" ? item.nombre : null,
-              descripcion: old?.descripcion ?? null,
-              estado: typeof stateObj.codigo === "string" ? stateObj.codigo : old?.estado ?? null,
-              organismo: typeof institution.organismo_comprador === "string" ? institution.organismo_comprador : old?.organismo ?? null,
-              region: normalizeRegion(institution.nombre_region, regionId),
-              monto_estimado: typeof amounts.monto_disponible_clp === "number" && Number.isFinite(amounts.monto_disponible_clp) ? amounts.monto_disponible_clp : old?.monto_estimado ?? null,
-              fecha_publicacion: safeDate(dates.fecha_publicacion, old?.fecha_publicacion),
-              fecha_cierre: safeDate(dates.fecha_cierre, old?.fecha_cierre),
-              datos_originales: item,
-              primera_deteccion: old?.primera_deteccion ?? timestamp,
-              ultima_revision: timestamp,
-            };
-          });
-          if (rows.length) {
-            const { error } = await db.from("compra_agil_oportunidades").upsert(rows, { onConflict: "codigo" });
-            if (error) throw new Error("No se pudieron guardar las oportunidades idempotentemente");
-          }
-          inserted += codes.filter((code) => !prior.has(code)).length;
-          updated += codes.filter((code) => prior.has(code)).length;
+          const validByCode = new Map<string, ApiItem>();
+          for (const item of items) if (typeof item.codigo === "string" && item.codigo.trim()) validByCode.set(item.codigo.trim(), { ...item, codigo: item.codigo.trim() });
+          const validItems = [...validByCode.values()];
           const reportedPages = payload.paginacion?.total_paginas;
-          totalPages = Number.isInteger(reportedPages) && Number(reportedPages) > 0
+          const hasReportedTotal = Number.isInteger(reportedPages) && Number(reportedPages) > 0;
+          totalPages = hasReportedTotal
             ? Number(reportedPages)
-            : totalPages ?? (items.length < PAGE_SIZE ? page : page + 1);
-          const pageFinished = page >= totalPages || items.length < PAGE_SIZE;
-          complete = pageFinished;
-          if (complete) {
-            const { error } = await db.from("compra_agil_sync_state").update({
-              cursor_success: windowTo, window_from: null, window_to: null, next_page: 1, total_pages: null,
-              last_success_at: timestamp, last_error: null, lock_until: new Date(Date.now() + 5 * 60_000).toISOString(), updated_at: timestamp,
-            }).eq("region_id", regionId).eq("lock_token", runId);
-            if (error) throw new Error("No se pudo confirmar el cursor exitoso");
-          } else {
-            const { error } = await db.from("compra_agil_sync_state").update({
-              next_page: page + 1, total_pages: totalPages, lock_until: new Date(Date.now() + 5 * 60_000).toISOString(), updated_at: timestamp,
-            }).eq("region_id", regionId).eq("lock_token", runId);
-            if (error) throw new Error("No se pudo guardar el punto de continuación");
+            : items.length < PAGE_SIZE ? page : totalPages;
+          complete = totalPages !== null ? page >= totalPages : items.length < PAGE_SIZE;
+          const { data: committed, error: commitError } = await db.rpc("compra_agil_sync_commit_page_with_mode", {
+            p_flow: "historical", p_region_id: regionId, p_run_token: runId,
+            p_page: page, p_total_pages: totalPages, p_complete: complete,
+            p_window_to: windowTo, p_items: validItems,
+            p_date_mode: dateMode,
+          });
+          if (commitError || !committed || !Number.isInteger(committed.inserted) || !Number.isInteger(committed.updated)) {
+            throw new Error("El commit transaccional del flujo histórico falló; oportunidades y checkpoint quedaron sin cambios");
           }
+          inserted += committed.inserted;
+          updated += committed.updated;
           page++;
         }
       } catch (error) {
@@ -407,7 +435,7 @@ Deno.serve(withSupabase({ auth: ["user", "secret:cron"], cors: { headers: corsHe
       await db.from("compra_agil_sync_state").update({
         lock_until: new Date(0).toISOString(), lock_token: null, last_error: executionNote, updated_at: new Date().toISOString(),
       }).eq("region_id", regionId).eq("lock_token", runId);
-      summaries.push({ region: regionId, nombre: REGIONS[regionId], estado: stateLabel, paginas_consultadas: pages, oportunidades_encontradas: found, nuevas: inserted, actualizadas: updated, cambio_desde: windowFrom, cambio_hasta: windowTo, paginas_pendientes: complete ? 0 : Math.max(0, (totalPages ?? page) - page), error: failure, continuable: !complete && !failure });
+      summaries.push({ region: regionId, nombre: REGIONS[regionId], estado: stateLabel, paginas_consultadas: pages, solicitudes_api: apiRequests, oportunidades_encontradas: found, nuevas: inserted, actualizadas: updated, cambio_desde: windowFrom, cambio_hasta: windowTo, pagina_siguiente: complete ? 1 : page, total_paginas: totalPages, paginas_pendientes: complete ? 0 : totalPages === null ? null : Math.max(0, totalPages - page + 1), error: failure, continuable: !complete && !failure });
     }
     return json({ sincronizacion: "incremental", regiones: summaries, paginas_maximas_por_ejecucion: MAX_PAGES_PER_RUN, cuota_agotada: summaries.some((row) => row.estado === "cuota_agotada") });
   }

@@ -1,4 +1,10 @@
 import { withSupabase } from "npm:@supabase/server@1";
+import {
+  classifyOpportunity,
+  filterRadarOpportunities,
+  santiagoDayAfterStartIso,
+  santiagoDayStartIso,
+} from "../_shared/compra-agil-radar.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -366,21 +372,23 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
       (max !== null && (!Number.isFinite(max) || max < 0)) ||
       (min !== null && max !== null && min > max)
     ) return reply({ error: "Filtros inválidos" }, 400);
+    if (fromDate && toDate && fromDate > toDate) return reply({ error: "El inicio del periodo debe ser anterior o igual al final" }, 400);
+    let fromIso: string | null = null, toExclusiveIso: string | null = null;
+    try {
+      if (fromDate) fromIso = santiagoDayStartIso(fromDate);
+      if (toDate) toExclusiveIso = santiagoDayAfterStartIso(toDate);
+    } catch {
+      return reply({ error: "La fecha seleccionada no existe en el calendario" }, 400);
+    }
     const opportunities = await allPages((start, end) => {
       let request = db.from("compra_agil_oportunidades").select(
-        "codigo, nombre, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre, estado",
+        "codigo, nombre, organismo, region, monto_estimado, fecha_publicacion, fecha_cierre, estado, ultima_revision, datos_originales",
       ).order(order, {
         ascending: filters.direccion === "asc",
         nullsFirst: false,
       }).order("codigo");
-      if (fromDate) {
-        request = request.gte("fecha_publicacion", `${fromDate}T00:00:00.000Z`);
-      }
-      if (toDate) {
-        const after = new Date(`${toDate}T00:00:00.000Z`);
-        after.setUTCDate(after.getUTCDate() + 1);
-        request = request.lt("fecha_publicacion", after.toISOString());
-      }
+      if (fromDate) request = request.gte("fecha_publicacion", fromIso!);
+      if (toDate) request = request.lt("fecha_publicacion", toExclusiveIso!);
       if (min !== null) request = request.gte("monto_estimado", min);
       if (max !== null) request = request.lte("monto_estimado", max);
       if (query) {
@@ -393,28 +401,13 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     if (opportunities.error) {
       return reply({ error: "No se pudieron consultar oportunidades" }, 500);
     }
-    const region = str(filters.region, 100).normalize("NFD").replace(
-      /\p{M}/gu,
-      "",
-    ).toLocaleLowerCase("es").replace(/^region\s+de\s+/u, "").replace(
-      /\s+/g,
-      " ",
-    ).trim();
-    let rows = opportunities.rows.filter((r) =>
-      !region ||
-      str(r.region, 100).normalize("NFD").replace(/\p{M}/gu, "")
-          .toLocaleLowerCase("es").replace(/^region\s+de\s+/u, "").replace(
-            /\s+/g,
-            " ",
-          ).trim() === region
+    const currentTime = Date.now();
+    let rows = filterRadarOpportunities(
+      opportunities.rows,
+      filters.region,
+      filters.solo_vigentes === true,
+      currentTime,
     );
-    const isConfirmedOpen = (row: Record<string, unknown>) => {
-      const closing = row.fecha_cierre;
-      return typeof closing === "string" &&
-        /(Z|[+-]\d{2}:\d{2})$/i.test(closing) &&
-        Number.isFinite(Date.parse(closing)) && Date.parse(closing) > Date.now();
-    };
-    if (filters.solo_vigentes === true) rows = rows.filter(isConfirmedOpen);
     const codes = rows.map((r) => String(r.codigo));
     const detailRows: Record<string, unknown>[] = [],
       trackRows: Record<string, unknown>[] = [];
@@ -493,13 +486,10 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
     }
     const total = rows.length, size = 25;
     return reply({
-      items: rows.slice((page - 1) * size, page * size).map((row) => ({
-        ...row,
-        vigencia: isConfirmedOpen(row) ? "abierta_confirmada" :
-          typeof row.fecha_cierre === "string" && /(Z|[+-]\d{2}:\d{2})$/i.test(row.fecha_cierre) && Number.isFinite(Date.parse(row.fecha_cierre))
-            ? "vencida"
-            : "no_verificable",
-      })),
+      items: rows.slice((page - 1) * size, page * size).map((row) => {
+        const { ultima_revision: _ultimaRevision, datos_originales: _datosOriginales, ...visibleRow } = row;
+        return { ...visibleRow, vigencia: classifyOpportunity(row, currentTime) };
+      }),
       total,
       pagina: page,
       por_pagina: size,

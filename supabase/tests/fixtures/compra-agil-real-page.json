@@ -1,0 +1,202 @@
+{
+  "schema": "cresce.compra-agil.real-page.v1",
+  "regionId": 9,
+  "page": 1,
+  "pageSize": 10,
+  "totalPages": 175,
+  "windowFrom": "2026-11-22T13:35:26.839Z",
+  "windowTo": "2026-11-24T13:35:26.839Z",
+  "capturedAt": "2026-11-24T13:35:37.339Z",
+  "items": [
+    {
+      "codigo": "1171142-2800-COT26",
+      "estado": {
+        "codigo": "cerrada",
+        "glosa": "Cerrada"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-19 17:36",
+        "fecha_cierre": "2026-11-24 10:22",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 1500000
+      }
+    },
+    {
+      "codigo": "1078177-1069-COT26",
+      "estado": {
+        "codigo": "publicada",
+        "glosa": "Publicada"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-19 17:01",
+        "fecha_cierre": "2026-11-25 11:23",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 3528000
+      }
+    },
+    {
+      "codigo": "3502-405-COT26",
+      "estado": {
+        "codigo": "desierta",
+        "glosa": "Desierta"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-12 09:14",
+        "fecha_cierre": "2026-11-15 00:45",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 164760
+      }
+    },
+    {
+      "codigo": "1171142-2804-COT26",
+      "estado": {
+        "codigo": "cerrada",
+        "glosa": "Cerrada"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-20 14:19",
+        "fecha_cierre": "2026-11-24 10:22",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 7000000
+      }
+    },
+    {
+      "codigo": "3517-248-COT26",
+      "estado": {
+        "codigo": "proveedor_seleccionado",
+        "glosa": "Proveedor seleccionado"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-12 11:05",
+        "fecha_cierre": "2026-11-13 11:10",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 400000
+      }
+    },
+    {
+      "codigo": "3494-536-COT26",
+      "estado": {
+        "codigo": "publicada",
+        "glosa": "Publicada"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-24 10:29",
+        "fecha_cierre": "2026-11-25 12:00",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 228289
+      }
+    },
+    {
+      "codigo": "3518-405-COT26",
+      "estado": {
+        "codigo": "proveedor_seleccionado",
+        "glosa": "Proveedor seleccionado"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-18 11:17",
+        "fecha_cierre": "2026-11-19 12:00",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 397105
+      }
+    },
+    {
+      "codigo": "1057389-2244-COT26",
+      "estado": {
+        "codigo": "publicada",
+        "glosa": "Publicada"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-24 10:28",
+        "fecha_cierre": "2026-11-25 14:00",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 500000
+      }
+    },
+    {
+      "codigo": "3477-626-COT26",
+      "estado": {
+        "codigo": "publicada",
+        "glosa": "Publicada"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-24 10:29",
+        "fecha_cierre": "2026-11-25 11:00",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 222000
+      }
+    },
+    {
+      "codigo": "885-956-COT26",
+      "estado": {
+        "codigo": "publicada",
+        "glosa": "Publicada"
+      },
+      "institucion": {
+        "region": 9,
+        "nombre_region": "Región de la Araucanía "
+      },
+      "fechas": {
+        "fecha_publicacion": "2026-11-24 10:29",
+        "fecha_cierre": "2026-11-27 10:00",
+        "fecha_ultimo_cambio": "2026-11-24T10:30:00.920Z"
+      },
+      "montos": {
+        "monto_disponible_clp": 1000000
+      }
+    }
+  ]
+}
