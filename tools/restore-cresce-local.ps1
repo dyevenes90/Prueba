@@ -2,7 +2,8 @@
 param(
     [string]$PgBinDirectory = 'D:\Programar\pgsql\bin',
     [string]$BackupPath,
-    [string]$BackupDirectory = (Join-Path $env:LOCALAPPDATA 'CRESCE\backups')
+    [string]$BackupDirectory = (Join-Path $env:LOCALAPPDATA 'CRESCE\backups'),
+    [switch]$AllowOmittingAuthForeignKeys
 )
 
 $ErrorActionPreference = 'Stop'
@@ -104,6 +105,12 @@ try {
     $list=Invoke-LocalTool (Join-Path $PgBinDirectory 'pg_restore.exe') @('--list',$BackupPath) $null
     if($list.ExitCode -ne 0 -or -not $list.Stdout) { throw "pg_restore --list falló: $($list.Stderr.Trim())" }
     $extensionEntries=@($list.Stdout -split '\r?\n' | Where-Object { $_ -match '\bEXTENSION\b' })
+    $archiveLines=@($list.Stdout -split '\r?\n')
+    $archiveForeignKeys=@($archiveLines | Where-Object { $_ -match '^\s*\d+;\s+\d+\s+\d+\s+FK CONSTRAINT\b' })
+    $archiveKeyConstraints=@($archiveLines | Where-Object { $_ -match '^\s*\d+;\s+\d+\s+\d+\s+CONSTRAINT public\b' })
+    $authForeignKeyPattern='^\s*\d+;\s+\d+\s+\d+\s+FK CONSTRAINT public trovo_importaciones_proveedor trovo_importaciones_proveedor_(cargado_por|revisado_por)_fkey\b'
+    $authForeignKeys=@($archiveLines | Where-Object { $_ -match $authForeignKeyPattern })
+    if($AllowOmittingAuthForeignKeys -and $authForeignKeys.Count -ne 2) { throw "Se esperaba encontrar exactamente las dos FK Auth conocidas; encontradas: $($authForeignKeys.Count). No se alteró la lista de restauración." }
     $schemaOnly=Invoke-LocalTool (Join-Path $PgBinDirectory 'pg_restore.exe') @('--schema-only','--file=-',$BackupPath) $null
     if($schemaOnly.ExitCode -ne 0) { throw 'No se pudo inspeccionar el DDL del respaldo.' }
     $managedReferences=@([regex]::Matches($schemaOnly.Stdout,'(?i)\bREFERENCES\s+([a-z_][\w]*)\.([a-z_][\w]*)') | ForEach-Object { '{0}.{1}' -f $_.Groups[1].Value.ToLowerInvariant(),$_.Groups[2].Value.ToLowerInvariant() } | Where-Object { ($_ -split '\.')[0] -ne 'public' } | Sort-Object -Unique)
@@ -139,7 +146,17 @@ try {
     Invoke-LocalPsql 'DROP SCHEMA public CASCADE' 'cresce_restore_validation' | Out-Null
     Write-Verbose 'Conexión verificada; iniciando pg_restore transaccional.'
     $restoreLog=Join-Path $restoreDir 'pg-restore.log'
-    $restore=Invoke-LocalTool (Join-Path $PgBinDirectory 'pg_restore.exe') @('--exit-on-error','--single-transaction','--no-owner','--no-privileges','--host=127.0.0.1',"--port=$script:port",'--username=cresce_restore','--dbname=cresce_restore_validation',$BackupPath) $restoreLog
+    $restoreArgs=@('--exit-on-error','--single-transaction','--no-owner','--no-privileges','--host=127.0.0.1',"--port=$script:port",'--username=cresce_restore','--dbname=cresce_restore_validation')
+    $omittedConstraints=@()
+    if($AllowOmittingAuthForeignKeys) {
+        $omittedConstraints=@('trovo_importaciones_proveedor_cargado_por_fkey','trovo_importaciones_proveedor_revisado_por_fkey')
+        $filteredList=foreach($line in $archiveLines) { if($line -match $authForeignKeyPattern) { '; intentionally omitted for isolated public-data validation: ' + $line } else { $line } }
+        $tocPath=Join-Path $restoreDir 'restore-selection.list'
+        [IO.File]::WriteAllLines($tocPath,[string[]]$filteredList,[Text.UTF8Encoding]::new($true)); Assert-PrivatePath $tocPath
+        $restoreArgs += @('--use-list',$tocPath)
+    }
+    $restoreArgs += $BackupPath
+    $restore=Invoke-LocalTool (Join-Path $PgBinDirectory 'pg_restore.exe') $restoreArgs $restoreLog
     if($restore.ExitCode -ne 0) {
         $errors=@($restore.Stderr -split '\r?\n' | Where-Object { $_ -match '(?i)error|fatal|does not exist|extension|permission denied' })
         if(-not $errors) { $errors=@('pg_restore devolvió un código de error sin diagnóstico legible; log completo privado.') }
@@ -150,19 +167,31 @@ try {
     $tables=[int](Invoke-LocalPsql "SELECT count(*) FROM pg_tables WHERE schemaname='public'" 'cresce_restore_validation')
     $opportunities=[int](Invoke-LocalPsql 'SELECT count(*) FROM public.compra_agil_oportunidades' 'cresce_restore_validation')
     $historical=[int](Invoke-LocalPsql 'SELECT count(*) FROM public.compra_agil_sync_state' 'cresce_restore_validation')
-    $historicalFingerprintSql="select count(*)::text || '|' || coalesce(md5(string_agg(concat_ws('|', s.region_id::text, coalesce(s.cursor_success::text,''), coalesce(s.window_from::text,''), coalesce(s.window_to::text,''), s.next_page::text, coalesce(s.total_pages::text,''), coalesce(to_jsonb(s)->>'date_mode','')), E'\n' order by s.region_id)), md5('')) from public.compra_agil_sync_state s"
+    $historicalFingerprintSql="SET TIME ZONE 'UTC'; SELECT count(*)::text || '|' || coalesce(md5(string_agg(concat_ws('|', s.region_id::text, coalesce(s.cursor_success::text,''), coalesce(s.window_from::text,''), coalesce(s.window_to::text,''), s.next_page::text, coalesce(s.total_pages::text,''), coalesce(to_jsonb(s)->>'date_mode','')), E'\n' order by s.region_id)), md5('')) from public.compra_agil_sync_state s"
     $historicalFingerprint=(Invoke-LocalPsql $historicalFingerprintSql 'cresce_restore_validation').Split('|')[-1]
+    $restoredForeignKeys=[int](Invoke-LocalPsql "SELECT count(*) FROM pg_constraint WHERE contype='f' AND connamespace='public'::regnamespace" 'cresce_restore_validation')
+    $restoredConstraints=[int](Invoke-LocalPsql "SELECT count(*) FROM pg_constraint WHERE contype IN ('p','u','f','c') AND connamespace='public'::regnamespace" 'cresce_restore_validation')
+    $opportunityIntegrity=(Invoke-LocalPsql "SELECT CASE WHEN count(*)=count(DISTINCT codigo) AND count(codigo)=count(*) THEN 'ok' ELSE 'mismatch' END FROM public.compra_agil_oportunidades" 'cresce_restore_validation')
+    $importRowStats=(Invoke-LocalPsql "SELECT count(*)::text || '|' || count(cargado_por)::text || '|' || count(revisado_por)::text FROM public.trovo_importaciones_proveedor" 'cresce_restore_validation')
     $priorityExists=(Invoke-LocalPsql "SELECT CASE WHEN to_regclass('public.compra_agil_sync_priority_state') IS NULL THEN 'absent' ELSE 'present' END" 'cresce_restore_validation') -eq 'present'
     $priority=if($priorityExists){[int](Invoke-LocalPsql 'SELECT count(*) FROM public.compra_agil_sync_priority_state' 'cresce_restore_validation')}else{$null}
     $expectedOpp=[int]$backup.Manifest.before.opportunities; $expectedHistorical=[int]$backup.Manifest.before.historical.count
     $expectedPriority=if($backup.Manifest.before.priority){[int]$backup.Manifest.before.priority.count}else{$null}
     $expectedFingerprint=[string]$backup.Manifest.before.historical.fingerprint
-    if($opportunities -ne $expectedOpp -or $historical -ne $expectedHistorical -or $historicalFingerprint -ne $expectedFingerprint -or ($null -ne $expectedPriority -and $priority -ne $expectedPriority)) { throw 'La restauración terminó, pero los conteos o fingerprint del checkpoint no coinciden con el manifiesto.' }
-    $restoreManifest=[ordered]@{status='restored_and_verified';source_dump=[IO.Path]::GetFileName($BackupPath);source_sha256=$hash;restored_at_utc=(Get-Date).ToUniversalTime().ToString('o');database='cresce_restore_validation';tables_public=$tables;opportunities=$opportunities;historical_checkpoints=$historical;historical_checkpoint_fingerprint=$historicalFingerprint;priority_table_present=$priorityExists;priority_checkpoints=$priority;extension_entries=@($extensionEntries);external_schema_references=@($managedReferences);scope_notice='public schema only; not a full Supabase recovery';network_bind='127.0.0.1 only';server_stopped_after_test=$true;logs=@('initdb.log','pg_ctl-start.log','postgres.log','pg-restore.log')}
+    $expectedForeignKeys=$archiveForeignKeys.Count-$omittedConstraints.Count
+    $restoredKeyConstraints=[int](Invoke-LocalPsql "SELECT count(*) FROM pg_constraint WHERE contype IN ('p','u') AND connamespace='public'::regnamespace" 'cresce_restore_validation')
+    $expectedKeyConstraints=$archiveKeyConstraints.Count
+    if($opportunities -ne $expectedOpp -or $historical -ne $expectedHistorical -or $historicalFingerprint -ne $expectedFingerprint -or ($null -ne $expectedPriority -and $priority -ne $expectedPriority) -or $restoredForeignKeys -ne $expectedForeignKeys -or $restoredKeyConstraints -ne $expectedKeyConstraints -or $opportunityIntegrity -ne 'ok') {
+        $observed=@("opportunities=$opportunities/$expectedOpp","historical=$historical/$expectedHistorical","fingerprint_match=$($historicalFingerprint -eq $expectedFingerprint)","key_constraints=$restoredKeyConstraints/$expectedKeyConstraints","foreign_keys=$restoredForeignKeys/$expectedForeignKeys","opportunity_code_integrity=$opportunityIntegrity","priority=$priority") -join '; '
+        throw "La restauración terminó, pero la validación no coincide: $observed"
+    }
+    $restoreStatus=if($omittedConstraints.Count -gt 0){'public_data_restored_with_auth_foreign_keys_omitted'}else{'public_schema_restored_and_verified'}
+    $restoreManifest=[ordered]@{status=$restoreStatus;source_dump=[IO.Path]::GetFileName($BackupPath);source_sha256=$hash;restored_at_utc=(Get-Date).ToUniversalTime().ToString('o');database='cresce_restore_validation';tables_public=$tables;opportunities=$opportunities;opportunity_code_integrity=$opportunityIntegrity;historical_checkpoints=$historical;historical_checkpoint_fingerprint=$historicalFingerprint;restored_constraints=$restoredConstraints;restored_key_constraints=$restoredKeyConstraints;archive_key_constraints=$archiveKeyConstraints.Count;restored_foreign_keys=$restoredForeignKeys;archive_foreign_keys=$archiveForeignKeys.Count;omitted_constraints=@($omittedConstraints);importation_rows=$importRowStats;priority_table_present=$priorityExists;priority_checkpoints=$priority;extension_entries=@($extensionEntries);external_schema_references=@($managedReferences);scope_notice='public schema only; not a full Supabase recovery';network_bind='127.0.0.1 only';server_stopped_after_test=$true;logs=@('initdb.log','pg_ctl-start.log','postgres.log','pg-restore.log')}
     $manifestOut=Join-Path $restoreDir 'restore-verification.json'; $restoreManifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestOut -Encoding UTF8; Assert-PrivatePath $manifestOut
-    Write-Output "RESTORE_STATUS=restored_and_verified"
+    Write-Output "RESTORE_STATUS=$restoreStatus"
     Write-Output "RESTORE_DIRECTORY=$restoreDir"
-    Write-Output "PUBLIC_TABLES=$tables; OPPORTUNITIES=$opportunities; HISTORICAL_CHECKPOINTS=$historical; CHECKPOINT_FINGERPRINT_MATCH=True; PRIORITY_TABLE_PRESENT=$priorityExists; PRIORITY_CHECKPOINTS=$priority"
+    Write-Output "PUBLIC_TABLES=$tables; OPPORTUNITIES=$opportunities; OPPORTUNITY_CODE_INTEGRITY=$opportunityIntegrity; HISTORICAL_CHECKPOINTS=$historical; CHECKPOINT_FINGERPRINT_MATCH=True; KEY_CONSTRAINTS=$restoredKeyConstraints/$($archiveKeyConstraints.Count); FOREIGN_KEYS=$restoredForeignKeys/$($archiveForeignKeys.Count); OMITTED_CONSTRAINTS=$($omittedConstraints.Count); IMPORTATION_ROWS=$importRowStats; PRIORITY_TABLE_PRESENT=$priorityExists; PRIORITY_CHECKPOINTS=$priority"
+    if($omittedConstraints.Count -gt 0) { Write-Output ('OMITTED_CONSTRAINT_NAMES=' + ($omittedConstraints -join ', ')); Write-Output 'NOTICE=This is a partial public-data recovery check, not a complete Supabase or constraint-complete restore.' }
     Write-Output "SOURCE_SHA256=$hash; EXTENSION_ENTRIES=$($extensionEntries.Count)"
     if($extensionEntries.Count -gt 0) { Write-Output ('EXTENSIONS=' + (($extensionEntries | ForEach-Object { ($_ -split '\s+')[5] }) -join ', ')) }
     Write-Output "VERIFICATION_MANIFEST=$manifestOut"
