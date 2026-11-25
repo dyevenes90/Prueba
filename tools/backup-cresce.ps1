@@ -49,6 +49,16 @@ function Remove-TemporaryCredentialDirectory([string]$Path) {
 }
 
 function Invoke-PgTool([string]$Executable, [string[]]$Arguments, [switch]$Capture) {
+    if ([IO.Path]::GetFileName($Executable) -match '^psql') {
+        $sensitive = @($env:PGPASSFILE)
+        for ($i=0; $i -lt $Arguments.Count - 1; $i++) {
+            if ([string]$Arguments[$i] -in @('--host','--username','--dbname','-h','-U','-d')) { $sensitive += [string]$Arguments[$i+1] }
+        }
+        $diagnostic = Invoke-PsqlDiagnostic -Executable $Executable -Arguments $Arguments -SensitiveValues $sensitive
+        if (-not $diagnostic.Success) { throw (Format-PsqlDiagnostic $diagnostic) }
+        if ($Capture) { return $diagnostic.Detail }
+        return
+    }
     try {
         if ($Capture) { $result = @(& $Executable @Arguments 2>$null) }
         else { $null = & $Executable @Arguments 2>$null }
@@ -72,6 +82,149 @@ function Invoke-PgTool([string]$Executable, [string[]]$Arguments, [switch]$Captu
 
 function Invoke-Psql([string]$Sql, [string]$PsqlPath, [string[]]$BaseArgs) {
     Invoke-PgTool -Executable $PsqlPath -Arguments ($BaseArgs + @('-c', $Sql)) -Capture
+}
+
+function ConvertTo-ProcessArgument([string]$Value) {
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    $builder = New-Object Text.StringBuilder
+    [void]$builder.Append('"')
+    $slashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ([int]$character -eq 92) { $slashes++; continue }
+        if ([int]$character -eq 34) {
+            [void]$builder.Append(('\' * (($slashes * 2) + 1)))
+            [void]$builder.Append('"')
+            $slashes = 0
+            continue
+        }
+        if ($slashes) { [void]$builder.Append(('\' * $slashes)); $slashes = 0 }
+        [void]$builder.Append($character)
+    }
+    if ($slashes) { [void]$builder.Append(('\' * ($slashes * 2))) }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Get-PsqlFailureCategory([string]$Text) {
+    if ($Text -match '(?i)password authentication failed|authentication failed|no password supplied|SASL|SCRAM|role .+ does not exist') { return 'Autenticación PostgreSQL' }
+    if ($Text -match '(?i)SSL|TLS|certificate|sslmode|no encryption|wrong version number') { return 'TLS' }
+    if ($Text -match '(?i)permission denied|SQLSTATE|ERROR:|relation .+ does not exist|syntax error') { return 'Consulta SQL o permisos' }
+    if ($Text -match '(?i)could not translate host|could not connect|connection refused|timeout expired|network is unreachable') { return 'Conectividad PostgreSQL' }
+    return 'Error de psql/script'
+}
+
+function Protect-PsqlDiagnostic([string]$Text, [string[]]$SensitiveValues) {
+    $safe = $Text
+    foreach ($value in $SensitiveValues) {
+        if (-not [string]::IsNullOrEmpty($value)) { $safe = [regex]::Replace($safe, [regex]::Escape($value), '[oculto]', [Text.RegularExpressions.RegexOptions]::IgnoreCase) }
+    }
+    $safe = [regex]::Replace($safe, '(?i)\b(password|passwd|pwd)\b\s*[:=]\s*[^\s,;]+', '$1=[oculto]')
+    $safe = [regex]::Replace($safe, '(?i)(?:for user|user)\s+["'']?[^\s"'']+["'']?', 'user [oculto]')
+    $safe = [regex]::Replace($safe, '(?i)host\s+["''][^"'']+["'']', 'host [oculto]')
+    return $safe.Trim()
+}
+
+function Invoke-PsqlDiagnostic([string]$Executable, [string[]]$Arguments, [string[]]$SensitiveValues) {
+    $process = $null
+    try {
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = $Executable
+        $info.Arguments = (($Arguments | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' ')
+        $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+        $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process; $process.StartInfo = $info
+        if (-not $process.Start()) { throw 'Process.Start returned false' }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.Result; $stderr = $stderrTask.Result
+        if ($process.ExitCode -eq 0) { return [pscustomobject]@{ Success=$true; Category=''; Detail=$stdout.Trim() } }
+        $detail = Protect-PsqlDiagnostic $stderr $SensitiveValues
+        return [pscustomobject]@{ Success=$false; Category=(Get-PsqlFailureCategory $detail); Detail=$detail }
+    } catch {
+        return [pscustomobject]@{ Success=$false; Category='Error del script'; Detail='No se pudo iniciar o leer psql. Comprueba la ruta del ejecutable y los permisos locales.' }
+    } finally { if ($process) { $process.Dispose() } }
+}
+
+function New-PrivatePgPassFile([string]$HostName, [string]$Port, [string]$Database, [string]$UserName, [Security.SecureString]$SecurePassword) {
+    $root = Join-Path $env:LOCALAPPDATA 'CRESCE\temp'
+    Ensure-PrivateDirectory $root
+    $directory = Join-Path $root ([guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+    $file = Join-Path $directory 'pgpass.conf'
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+    try {
+        $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        if ($password -match '[\r\n]') { throw 'La contraseña contiene saltos de línea no compatibles con el archivo temporal libpq.' }
+        Assert-PrivatePath $directory | Out-Null
+        $line = '{0}:{1}:{2}:{3}:{4}' -f (Escape-PgPassField $HostName), (Escape-PgPassField $Port), (Escape-PgPassField $Database), (Escape-PgPassField $UserName), (Escape-PgPassField $password)
+        [IO.File]::WriteAllText($file, $line, [Text.UTF8Encoding]::new($false))
+        Assert-PrivatePath $file | Out-Null
+        return [pscustomobject]@{ Directory=$directory; File=$file }
+    } catch {
+        Remove-TemporaryCredentialDirectory $directory
+        throw
+    } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr); $password=$null; $line=$null }
+}
+
+function Test-PostgresBackupConnection([string]$PsqlPath, [string]$HostName, [string]$Port, [string]$Database, [string]$UserName, [Security.SecureString]$SecurePassword) {
+    $pass = $null; $oldPassfile=$env:PGPASSFILE; $oldSslmode=$env:PGSSLMODE; $oldTimeout=$env:PGCONNECT_TIMEOUT
+    try {
+        $pass = New-PrivatePgPassFile $HostName $Port $Database $UserName $SecurePassword
+        $env:PGPASSFILE=$pass.File; $env:PGSSLMODE='require'; $env:PGCONNECT_TIMEOUT='15'
+        $base = (New-ConnectionArgs $HostName $Port $Database $UserName) + @('-X','--no-psqlrc','--no-password','--tuples-only','--no-align','--quiet','--set','ON_ERROR_STOP=1')
+        $sensitive = @($HostName,$UserName,$Database,$pass.File)
+        $first = Invoke-PsqlDiagnostic -Executable $PsqlPath -Arguments ($base + @('-c','BEGIN READ ONLY; SELECT 1; SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid(); COMMIT;')) -SensitiveValues $sensitive
+        if (-not $first.Success) { return [pscustomobject]@{ Success=$false; Message=(Format-PsqlDiagnostic $first) } }
+        if (-not (Test-ReadOnlyTlsResult $first.Detail)) { return [pscustomobject]@{ Success=$false; Message='TLS: SELECT 1 pasó, pero PostgreSQL no confirmó una sesión SSL/TLS activa.' } }
+        $permissionSql = @"
+BEGIN READ ONLY;
+WITH public_tables AS (
+  SELECT c.oid, c.relname, has_table_privilege(current_user, c.oid, 'SELECT') AS can_select
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='public' AND c.relkind IN ('r','p','m')
+), public_sequences AS (
+  SELECT c.oid, c.relname, has_sequence_privilege(current_user, c.oid, 'SELECT') AS can_select
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S'
+), required_tables AS (
+  SELECT name, to_regclass('public.' || name) AS object_id FROM unnest(ARRAY['compra_agil_oportunidades','compra_agil_sync_state']) AS name
+)
+SELECT CASE WHEN has_schema_privilege(current_user,'public','USAGE') THEN '1' ELSE '0' END || '|' ||
+       (SELECT count(*) FROM required_tables WHERE object_id IS NULL)::text || '|' ||
+       (SELECT count(*) FROM required_tables WHERE object_id IS NOT NULL AND NOT has_table_privilege(current_user,object_id,'SELECT'))::text || '|' ||
+       (SELECT count(*) FROM public_tables WHERE NOT can_select)::text || '|' ||
+       (SELECT count(*) FROM public_sequences WHERE NOT can_select)::text || '|' ||
+       coalesce((SELECT string_agg(relname,',') FROM public_tables WHERE NOT can_select),'') || '|' ||
+       coalesce((SELECT string_agg(relname,',') FROM public_sequences WHERE NOT can_select),'');
+COMMIT;
+"@
+        $second = Invoke-PsqlDiagnostic -Executable $PsqlPath -Arguments ($base + @('-c',$permissionSql)) -SensitiveValues $sensitive
+        if (-not $second.Success) { return [pscustomobject]@{ Success=$false; Message=(Format-PsqlDiagnostic $second) } }
+        $parts = $second.Detail.Trim() -split '\|',7
+        if ($parts.Count -ne 7) { return [pscustomobject]@{ Success=$false; Message='Error del script: respuesta inesperada al revisar permisos PostgreSQL.' } }
+        if ($parts[0] -ne '1') { return [pscustomobject]@{ Success=$false; Message='Permisos SQL: falta USAGE sobre el esquema public.' } }
+        if ([int]$parts[1] -gt 0 -or [int]$parts[2] -gt 0) { return [pscustomobject]@{ Success=$false; Message='Permisos SQL: faltan tablas de oportunidades/checkpoints o permiso SELECT.' } }
+        if ([int]$parts[3] -gt 0 -or [int]$parts[4] -gt 0) {
+            $names = @($parts[5],$parts[6] | Where-Object { $_ }) -join ', '
+            return [pscustomobject]@{ Success=$false; Message="Permisos SQL: SELECT insuficiente para el respaldo completo del esquema public ($($parts[3]) tablas/vistas materializadas y $($parts[4]) secuencias). Objetos: $names" }
+        }
+        return [pscustomobject]@{ Success=$true; Message='Conexión TLS y autenticación correctas. SELECT 1 pasó en transacción de solo lectura; los permisos de lectura para el respaldo de public también están completos.' }
+    } catch {
+        return [pscustomobject]@{ Success=$false; Message=('Error del script: ' + $_.Exception.Message) }
+    } finally {
+        $env:PGPASSFILE=$oldPassfile; $env:PGSSLMODE=$oldSslmode; $env:PGCONNECT_TIMEOUT=$oldTimeout
+        if ($pass -and (Test-Path -LiteralPath $pass.Directory)) { Remove-TemporaryCredentialDirectory $pass.Directory }
+    }
+}
+
+function Format-PsqlDiagnostic($Result) {
+    $message = if ($Result.Detail) { $Result.Detail } else { 'psql no proporcionó detalle adicional.' }
+    return ($Result.Category + ': ' + $message)
+}
+
+function Test-ReadOnlyTlsResult([string]$Output) {
+    $lines = @($Output -split '\r?\n' | Where-Object { $_.Trim() })
+    return ($lines.Count -eq 2 -and $lines[0].Trim() -eq '1' -and $lines[1].Trim() -match '^(t|true)$')
 }
 
 function Escape-PgPassField([string]$Value) {
@@ -146,7 +299,7 @@ function Read-ConsoleConnection($Saved) {
     return @{ host=$hostName; port=$port; database=$database; user=$userName; securePassword=$secure }
 }
 
-function Show-ConnectionDialog([string]$ConfigPath, [string]$DefaultBin) {
+function Show-ConnectionDialog([string]$ConfigPath, [string]$DefaultBin, [string]$PsqlPath) {
     if ([Threading.Thread]::CurrentThread.ApartmentState -ne [Threading.ApartmentState]::STA) {
         throw 'El formulario requiere PowerShell en modo STA. Usa powershell.exe -STA -NoProfile -File .\tools\backup-cresce.ps1 -PgBinDirectory D:\Programar\pgsql\bin; como alternativa, agrega -Console.'
     }
@@ -157,7 +310,7 @@ function Show-ConnectionDialog([string]$ConfigPath, [string]$DefaultBin) {
     $form = New-Object Windows.Forms.Form
     $form.Text = 'Respaldo privado de CRESCE'; $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false; $form.MinimizeBox = $false
-    $form.ClientSize = New-Object Drawing.Size(500, 340)
+    $form.ClientSize = New-Object Drawing.Size(500, 370)
     $labels = @('Host', 'Puerto', 'Base de datos', 'Usuario', 'Contraseña')
     $values = @($(if ($saved) {$saved.host} else {''}), $(if ($saved) {$saved.port} else {'5432'}), $(if ($saved) {$saved.database} else {'postgres'}), $(if ($saved) {$saved.user} else {''}), '')
     $boxes = @{}
@@ -169,10 +322,28 @@ function Show-ConnectionDialog([string]$ConfigPath, [string]$DefaultBin) {
     }
     $remember = New-Object Windows.Forms.CheckBox; $remember.Text='Recordar solo host, puerto, base y usuario'; $remember.Location=New-Object Drawing.Point(145,258); $remember.AutoSize=$true; $remember.Checked=[bool]$saved
     $note = New-Object Windows.Forms.Label; $note.Text='La contraseña no se guarda. Se exige TLS y el respaldo queda fuera del repositorio.'; $note.Location=New-Object Drawing.Point(20,286); $note.Size=New-Object Drawing.Size(455,22)
-    $run = New-Object Windows.Forms.Button; $run.Text='Crear respaldo'; $run.Location=New-Object Drawing.Point(250,310); $run.Size=New-Object Drawing.Size(120,28)
-    $cancel = New-Object Windows.Forms.Button; $cancel.Text='Cancelar'; $cancel.Location=New-Object Drawing.Point(380,310); $cancel.Size=New-Object Drawing.Size(90,28); $cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel
-    $form.Controls.Add($remember); $form.Controls.Add($note); $form.Controls.Add($run); $form.Controls.Add($cancel); $form.AcceptButton=$run; $form.CancelButton=$cancel
+    $test = New-Object Windows.Forms.Button; $test.Text='Probar conexión'; $test.Location=New-Object Drawing.Point(20,320); $test.Size=New-Object Drawing.Size(135,28)
+    $run = New-Object Windows.Forms.Button; $run.Text='Crear respaldo'; $run.Location=New-Object Drawing.Point(225,320); $run.Size=New-Object Drawing.Size(125,28)
+    $cancel = New-Object Windows.Forms.Button; $cancel.Text='Cancelar'; $cancel.Location=New-Object Drawing.Point(370,320); $cancel.Size=New-Object Drawing.Size(100,28); $cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel
+    $form.Controls.Add($remember); $form.Controls.Add($note); $form.Controls.Add($test); $form.Controls.Add($run); $form.Controls.Add($cancel); $form.AcceptButton=$run; $form.CancelButton=$cancel
     $state = @{ data=$null }
+    $test.Add_Click({
+        $test.Enabled=$false; $run.Enabled=$false; $cancel.Enabled=$false; $form.UseWaitCursor=$true
+        $secure=$null
+        try {
+            Assert-ConnectionInput $boxes['Host'].Text $boxes['Puerto'].Text $boxes['Base de datos'].Text $boxes['Usuario'].Text | Out-Null
+            if ([string]::IsNullOrEmpty($boxes['Contraseña'].Text)) { throw 'Escribe la contraseña de la base.' }
+            $secure = ConvertTo-SecureInput $boxes['Contraseña'].Text
+            $result = Test-PostgresBackupConnection -PsqlPath $PsqlPath -HostName $boxes['Host'].Text -Port $boxes['Puerto'].Text -Database $boxes['Base de datos'].Text -UserName $boxes['Usuario'].Text -SecurePassword $secure
+            $icon = if ($result.Success) { 'Information' } else { 'Warning' }
+            [Windows.Forms.MessageBox]::Show($result.Message, 'Prueba de conexión', 'OK', $icon) | Out-Null
+        } catch {
+            [Windows.Forms.MessageBox]::Show(('Error del script: ' + $_.Exception.Message), 'Prueba de conexión', 'OK', 'Error') | Out-Null
+        } finally {
+            if ($secure) { $secure.Dispose() }
+            $form.UseWaitCursor=$false; $test.Enabled=$true; $run.Enabled=$true; $cancel.Enabled=$true
+        }
+    })
     $run.Add_Click({
         try {
             Assert-ConnectionInput $boxes['Host'].Text $boxes['Puerto'].Text $boxes['Base de datos'].Text $boxes['Usuario'].Text | Out-Null
@@ -233,6 +404,32 @@ function Assert-BackupSelfTests {
     $failed=$false
     try { Invoke-PgTool -Executable (Join-Path $env:WINDIR 'System32\cmd.exe') -Arguments @('/d','/c','echo SECRET_MARKER 1>&2 & exit /b 9') } catch { $failed=$true; if ($_.Exception.Message -match 'SECRET_MARKER') { throw 'Un error expuso salida sensible del proceso.' } }
     if (-not $failed) { throw 'No se detectó el fallo simulado de herramienta.' }
+    foreach ($case in @(
+        @{text='FATAL: password authentication failed for user someone'; expected='Autenticación PostgreSQL'},
+        @{text='SSL error: certificate verify failed'; expected='TLS'},
+        @{text='ERROR: permission denied for table sample'; expected='Consulta SQL o permisos'},
+        @{text='could not connect to server: timeout expired'; expected='Conectividad PostgreSQL'}
+    )) { if ((Get-PsqlFailureCategory $case.text) -ne $case.expected) { throw 'Clasificación sintética de error psql incorrecta.' } }
+    if (-not (Test-ReadOnlyTlsResult "1`nt") -or (Test-ReadOnlyTlsResult "1`nf") -or (Test-ReadOnlyTlsResult '1')) { throw 'Validación sintética de SELECT 1/TLS incorrecta.' }
+    $protected = Protect-PsqlDiagnostic 'password authentication failed for user account-marker, password=secret-marker' @('account-marker','secret-marker')
+    if ($protected -match 'account-marker|secret-marker') { throw 'La sanitización dejó datos sensibles en el diagnóstico.' }
+    $cmdPath=Join-Path $env:WINDIR 'System32\cmd.exe'
+    $ok = Invoke-PsqlDiagnostic -Executable $cmdPath -Arguments @('/d','/c','echo 1') -SensitiveValues @()
+    if (-not $ok.Success -or $ok.Detail.Trim() -ne '1') { throw 'No se capturó correctamente stdout del proceso sintético.' }
+    $failure = Invoke-PsqlDiagnostic -Executable $cmdPath -Arguments @('/d','/c','echo FATAL: password authentication failed for account-marker 1>&2 & exit /b 2') -SensitiveValues @('account-marker')
+    if ($failure.Success -or $failure.Category -ne 'Autenticación PostgreSQL' -or $failure.Detail -match 'account-marker') { throw 'No se capturó/sanitizó stderr de psql sintético.' }
+    $missingProcess = Invoke-PsqlDiagnostic -Executable (Join-Path $env:TEMP 'missing-psql.exe') -Arguments @('-c','SELECT 1') -SensitiveValues @()
+    if ($missingProcess.Success -or $missingProcess.Category -ne 'Error del script') { throw 'No se clasificó un error de inicio del proceso.' }
+    $tempRoot=Join-Path $env:LOCALAPPDATA 'CRESCE\temp'; Ensure-PrivateDirectory $tempRoot
+    $tempCountBefore=@(Get-ChildItem -LiteralPath $tempRoot -Directory -ErrorAction SilentlyContinue).Count
+    $savedPassfile=$env:PGPASSFILE; $savedSslmode=$env:PGSSLMODE; $savedTimeout=$env:PGCONNECT_TIMEOUT
+    $env:PGPASSFILE='synthetic-old-passfile'; $env:PGSSLMODE='verify-ca'; $env:PGCONNECT_TIMEOUT='23'
+    $secureTest=ConvertTo-SecureInput 'synthetic-password-marker'
+    try { $result=Test-PostgresBackupConnection -PsqlPath (Join-Path $env:TEMP 'missing-psql.exe') -HostName 'host.example' -Port '5432' -Database 'postgres' -UserName 'synthetic-user' -SecurePassword $secureTest }
+    finally { $secureTest.Dispose() }
+    $env:PGPASSFILE=$savedPassfile; $env:PGSSLMODE=$savedSslmode; $env:PGCONNECT_TIMEOUT=$savedTimeout
+    $tempCountAfter=@(Get-ChildItem -LiteralPath $tempRoot -Directory -ErrorAction SilentlyContinue).Count
+    if ($result.Success -or $result.Message -notmatch 'Error del script' -or $tempCountBefore -ne $tempCountAfter -or $env:PGPASSFILE -ne $savedPassfile -or $env:PGSSLMODE -ne $savedSslmode -or $env:PGCONNECT_TIMEOUT -ne $savedTimeout) { throw 'La prueba sintética no limpió credenciales temporales o no restauró el entorno.' }
     Write-Host 'Pruebas locales del respaldo: entradas, argumentos, errores y archivos OK.'
 }
 
@@ -285,27 +482,16 @@ try {
     }
 
     if ($Console) { $connection = Read-ConsoleConnection $savedConnection }
-    else { $connection = Show-ConnectionDialog $configPath $bin }
+    else { $connection = Show-ConnectionDialog $configPath $bin $psql }
     if (-not $connection) { Write-Host 'Respaldo cancelado; no se conecto a Supabase.'; return }
     $hostName = $connection.host; $port = $connection.port; $database = $connection.database; $userName = $connection.user
     $securePassword = $connection.securePassword
     Assert-ConnectionInput $hostName $port $database $userName | Out-Null
     if ($securePassword.Length -eq 0) { throw 'La contraseña no puede estar vacía.' }
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
-    try { $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-    if ($password -match '[\r\n]') { throw 'La contraseña contiene saltos de línea no compatibles con el archivo temporal libpq.' }
-
-    Ensure-PrivateDirectory -Path $tempRoot
-    $runDirectory = Join-Path $tempRoot ([guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $runDirectory | Out-Null
-    Assert-PrivatePath -Path $runDirectory | Out-Null
-    $passFile = Join-Path $runDirectory 'pgpass.conf'
-    $escapedPassword = Escape-PgPassField $password
-    $passLine = '{0}:{1}:{2}:{3}:{4}' -f (Escape-PgPassField $hostName), (Escape-PgPassField $port), (Escape-PgPassField $database), (Escape-PgPassField $userName), $escapedPassword
-    [IO.File]::WriteAllText($passFile, $passLine, [Text.UTF8Encoding]::new($false))
-    Assert-PrivatePath -Path $passFile | Out-Null
-    $password = $null; $escapedPassword = $null; $passLine = $null; $securePassword.Dispose(); $securePassword = $null
+    $passInfo = New-PrivatePgPassFile $hostName $port $database $userName $securePassword
+    $runDirectory = $passInfo.Directory
+    $passFile = $passInfo.File
+    $securePassword.Dispose(); $securePassword = $null
     $env:PGPASSFILE = $passFile
     $env:PGSSLMODE = 'require'
     $env:PGCONNECT_TIMEOUT = '15'

@@ -12,7 +12,7 @@ Este procedimiento crea un archivo PostgreSQL custom del esquema `public`. Es un
    powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File .\tools\backup-cresce.ps1 -PgBinDirectory 'D:\Programar\pgsql\bin'
    ```
 
-   El formulario permite pegar los campos, enmascara la contraseña y muestra los errores. También puedes ejecutarlo sin `-PgBinDirectory`; detecta `D:\Programar\pgsql\bin` y varias carpetas privadas comunes.
+   El formulario permite pegar los campos, enmascara la contraseña y muestra los errores. Usa **Probar conexión** para validar TLS, autenticación, `SELECT 1` de solo lectura y permisos de lectura del esquema `public` antes de crear el dump. También puedes ejecutarlo sin `-PgBinDirectory`; detecta `D:\Programar\pgsql\bin` y varias carpetas privadas comunes.
 
    Alternativa de consola (sin formulario):
 
