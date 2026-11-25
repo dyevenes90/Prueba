@@ -571,7 +571,23 @@ function caPrivateImportSetup(){const picker=document.getElementById('ca-import-
   const label=document.getElementById('ca-sync-result'),priorText=targetButton.textContent;targetButton.disabled=true;targetButton.textContent=onePage?'Consultando una página de Araucanía...':action==='buscar_compras_nuevas'?'Consultando Mercado Publico...':'Continuando historial...';if(label){label.textContent=onePage?'Prueba manual limitada a una solicitud y una página de Araucanía. Se conserva el checkpoint histórico independiente.':action==='buscar_compras_nuevas'?'Consulta prioritaria real en curso. El historial conserva su checkpoint independiente.':'Continuacion del historial en curso. El cursor prioritario no cambia.';label.dataset.kind='loading';}
   try{
    const body=action==='buscar_compras_nuevas'?{accion:action,regiones:selected,cambio_desde:since}:{accion:action};
-   const result=await client.functions.invoke('compra-agil-sync',{body});if(result.error)throw result.error;const data=result.data;if(data&&data.error)throw new Error(data.error);
+   const result=await client.functions.invoke('compra-agil-sync',{body});
+   if(result.error){
+    const response=result.error.context;
+    let reason='';
+    if(response&&typeof response.clone==='function'){
+     try{const payload=await response.clone().json();if(payload&&typeof payload.error==='string'&&payload.error.length<=600)reason=payload.error;}catch{}
+    }
+    const status=Number(response?.status)||0;
+    if(!reason){
+     if(status===409)reason='Antes de buscar compras nuevas, primero presiona "Probar 1 página - Araucanía" y verifica que concluya correctamente.';
+     else if(status===401||status===403)reason='Tu sesión no tiene autorización para sincronizar. Inicia sesión de nuevo y revisa los permisos.';
+     else if(status===429)reason='ChileCompra o el servicio alcanzó el límite de solicitudes; intenta más tarde.';
+     else reason=status?'Error HTTP '+status+' al consultar Compra Ágil.':'No se pudo conectar con el motor de Compra Ágil.';
+    }
+    throw new Error(reason);
+   }
+   const data=result.data;if(data&&data.error)throw new Error(data.error);
    const rows=Array.isArray(data&&data.regiones)?data.regiones:[];if(!rows.length)throw new Error('La funcion no confirmo resultados por region.');
    const requests=rows.reduce((sum,row)=>sum+(Number(row.solicitudes_api)||Number(row.paginas_consultadas)||0),0),problems=rows.filter(row=>['error','cuota_agotada','otra_sincronizacion_en_curso','requiere_fecha_inicial'].includes(row.estado)),pending=rows.filter(row=>row.continuable||row.estado==='pendiente_por_limite'||Number(row.paginas_pendientes)>0);
    const lines=rows.map(row=>{const name=row.nombre||('Region '+row.region),count=Number(row.paginas_consultadas)||0;if(onePage){const checkpoint=row.checkpoint_final||{},codes=Array.isArray(row.codigos_encontrados)?row.codigos_encontrados.join(', '):'ninguno';return `${name}: ${count}/1 páginas consultadas, ${Number(row.nuevas)||0} insertadas, ${Number(row.actualizadas)||0} actualizadas, ${Number(row.omitidos)||0} omitidas; códigos: ${codes}; checkpoint p.${checkpoint.next_page??row.pagina_siguiente??'-'}${checkpoint.total_pages?'/'+checkpoint.total_pages:''}; ${caSyncStatusLabel(row.estado)}${row.error?' - '+row.error:''}`;}return count?name+': '+count+' paginas, '+(Number(row.nuevas)||0)+' nuevas, '+(Number(row.actualizadas)||0)+' actualizadas, pendientes '+(row.paginas_pendientes==null?'por determinar':row.paginas_pendientes)+'; '+caSyncStatusLabel(row.estado)+(row.error?' - '+row.error:''):name+': sin paginas confirmadas; '+caSyncStatusLabel(row.estado)+(row.error?' - '+row.error:'');});
