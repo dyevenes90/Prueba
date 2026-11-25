@@ -34,14 +34,6 @@ jobs:
           node-version: 24
       - name: Syntax-check local operational preflight
         run: node --check tools/preflight-compra-agil.mjs
-      - name: Verify synthetic public dump and restore
-        env:
-          PGHOST: localhost
-          PGPORT: 5432
-          PGUSER: postgres
-          PGPASSWORD: cresce_ci_only
-          PGDATABASE: cresce_ci
-        run: bash supabase/tests/backup-restore-synthetic.sh
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.8.0
@@ -57,6 +49,33 @@ jobs:
           PGPASSWORD: cresce_ci_only
           PGDATABASE: cresce_ci
         run: bash supabase/tests/compra-agil-postgres-integration.sh
+
+  backup-restore-synthetic:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: cresce_ci_only
+          POSTGRES_DB: cresce_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cresce_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify synthetic public dump and restore
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: cresce_ci_only
+          PGDATABASE: cresce_ci
+        run: bash supabase/tests/backup-restore-synthetic.sh
 
   windows-backup-script:
     runs-on: windows-latest

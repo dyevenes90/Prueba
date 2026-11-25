@@ -186,7 +186,7 @@ function Assert-BackupSelfTests {
     Write-Host 'Pruebas locales del respaldo: entradas, argumentos, errores y archivos OK.'
 }
 
-if ($SelfTest) { Assert-BackupSelfTests; return }
+if ($SelfTest) { Assert-BackupSelfTests; $global:LASTEXITCODE = 0; return }
 
 function Get-CountAndFingerprint([string]$Table, [string]$PsqlPath, [string[]]$BaseArgs) {
     $sql = "select count(*)::text || '|' || coalesce(md5(string_agg(concat_ws('|', s.region_id::text, coalesce(s.cursor_success::text,''), coalesce(s.window_from::text,''), coalesce(s.window_to::text,''), s.next_page::text, coalesce(s.total_pages::text,''), coalesce(to_jsonb(s)->>'date_mode','')), E'\n' order by s.region_id)), md5('')) from public.$Table s"
